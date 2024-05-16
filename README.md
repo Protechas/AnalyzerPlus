@@ -33,7 +33,7 @@ goldenlist: Stores golden list data for DTC codes.
 
 Access the admin console by clicking the 'Admin' button on the toolbar.
 
-Enter the admin password ("ADAS").
+Enter the admin password.
 
 Select 'Update Paths' and choose the configuration type (blacklist, goldenlist, prequal).
 
