@@ -45,7 +45,7 @@ The data will be imported and the database will be updated.
 
 Click the 'Export' button on the toolbar.
 
-Choose the desired file format (CSV or JSON).
+Choose the CSV file format.
 
 Select the save location and file name.
 
