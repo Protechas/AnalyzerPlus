@@ -92,3 +92,5 @@ Orange
 **Futuristic Design**
 
 The application features a futuristic design with smooth lines, gradient backgrounds, and a high-tech feel. The themes only change the background color while maintaining consistent text and button styling.
+
+****Developed, Designed and Programed by Zachary Gilk and Shane Eang****
