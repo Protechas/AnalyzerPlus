@@ -165,6 +165,15 @@ class App(QMainWindow):
         with open(self.settings_file, 'w') as file:
             json.dump(settings, file)
 
+    def save_current_theme(self):
+        settings = self.load_settings()
+        settings['theme'] = self.current_theme
+        self.save_settings(settings)
+
+    def closeEvent(self, event):
+        self.save_current_theme()
+        event.accept()
+
     def check_data_loaded(self):
         if not self.data['prequal']:
             self.make_dropdown.setDisabled(True)
@@ -197,6 +206,10 @@ class App(QMainWindow):
         self.theme_dropdown.addItems(themes)
         self.theme_dropdown.currentIndexChanged.connect(self.apply_selected_theme)
         self.toolbar.addWidget(self.theme_dropdown)
+
+        # Set the theme dropdown to the current theme
+        theme_index = themes.index(self.current_theme)
+        self.theme_dropdown.setCurrentIndex(theme_index)
 
         self.search_bar = QLineEdit()
         self.search_bar.setPlaceholderText("Enter DTC code or description")
@@ -343,12 +356,6 @@ class App(QMainWindow):
         self.search_make_dropdown.addItems(makes)
         logging.debug(f"Search makes populated: {makes}")
 
-    def populate_search_make_dropdown(self):
-        self.search_make_dropdown.clear()
-        self.search_make_dropdown.addItem("Select Make for List")
-        makes = sorted(set(item['Make'].strip() for item in self.data['prequal'] if item['Make'].strip() and item['Make'].strip().lower() != 'unknown'))
-        self.search_make_dropdown.addItems(makes)
-
     def reset_filter_dropdown(self):
         self.filter_dropdown.setCurrentIndex(0)
 
@@ -456,12 +463,6 @@ class App(QMainWindow):
             logging.error(f"Failed to open URL: {actual_url.toString()}")
         else:
             logging.info(f"URL opened successfully: {actual_url.toString()}")
-
-    def load_settings(self):
-        if os.path.exists(self.settings_file):
-            with open(self.settings_file, 'r') as file:
-                return json.load(file)
-        return {"theme": "Dark"}  # Default to Dark theme if no settings file exists
 
     def apply_selected_theme(self):
         theme = self.theme_dropdown.currentText()
@@ -948,19 +949,19 @@ class App(QMainWindow):
             UNION ALL
             SELECT 'Goldenlist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments
             FROM goldenlist
-            WHERE (dtcCode LIKE '%{dtc_code}%' OR dtcDescription LIKE '%{dtc_code}%');
+            WHERE (dtcCode LIKE '%{dtc_code}%' OR dtcDescription LIKE '%{dtc_code}%')
             """
         elif filter_type == "Blacklist":
             query = f"""
             SELECT 'Blacklist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments
             FROM blacklist
-            WHERE (dtcCode LIKE '%{dtc_code}%' OR dtcDescription LIKE '%{dtc_code}%');
+            WHERE (dtcCode LIKE '%{dtc_code}%' OR dtcDescription LIKE '%{dtc_code}%')
             """
         else:
             query = f"""
             SELECT 'Goldenlist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments
             FROM goldenlist
-            WHERE (dtcCode LIKE '%{dtc_code}%' OR dtcDescription LIKE '%{dtc_code}%');
+            WHERE (dtcCode LIKE '%{dtc_code}%' OR dtcDescription LIKE '%{dtc_code}%')
             """
 
         if selected_make_search != "Select Make for List":
