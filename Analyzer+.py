@@ -823,7 +823,7 @@ class App(QMainWindow):
         selected_make = self.make_dropdown.currentText().strip()
         if selected_make != "Select Make":
             models = [item['Model'] for item in self.data['prequal'] if item['Make'] == selected_make]
-            unique_models = sorted(set(models))
+            unique_models = sorted(set(str(model) for model in models))
             self.model_dropdown.clear()
             self.model_dropdown.addItem("Select Model")
             self.model_dropdown.addItems(unique_models)
