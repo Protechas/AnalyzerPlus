@@ -5,9 +5,10 @@ import re
 import sqlite3
 import logging
 import pandas as pd
-from PyQt5.QtWidgets import (QApplication, QFrame, QMainWindow, QToolBar, QVBoxLayout, QHBoxLayout, QWidget, QLineEdit, QPushButton, QComboBox, QTextBrowser, QMessageBox, QStatusBar, QInputDialog, QFileDialog, QSlider, QLabel, QListWidget, QSpacerItem, QSizePolicy)
+from PyQt5.QtWidgets import (QApplication, QFrame, QMainWindow, QToolBar, QVBoxLayout, QHBoxLayout, QWidget, QLineEdit, QPushButton, QComboBox, QTextBrowser, QMessageBox, QStatusBar, QInputDialog, QFileDialog, QSlider, QLabel, QListWidget, QSpacerItem, QSizePolicy, QSplitter)
 from PyQt5.QtCore import Qt, QUrl
 from PyQt5.QtGui import QIcon, QDesktopServices
+
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class ResizableToolBar(QToolBar):
@@ -52,7 +53,7 @@ def initialize_db(db_path='data.db'):
             );
         ''')
         cursor.execute('''
-            CREATE TABLE IF NOT EXISTS goldenlist (
+            CREATE TABLE IF NOT EXISTS goldlist (
                 id INTEGER PRIMARY KEY,
                 dtcCode TEXT,
                 genericSystemName TEXT,
@@ -149,7 +150,7 @@ class App(QMainWindow):
         self.settings_file = 'settings.json'
         self.current_theme = self.load_settings().get('theme', 'Dark')
         initialize_db(self.db_path)
-        self.data = {'blacklist': [], 'goldenlist': [], 'prequal': []}
+        self.data = {'blacklist': [], 'goldlist': [], 'prequal': []}
         self.setup_ui()
         self.load_configurations()
         self.check_data_loaded()
@@ -178,10 +179,10 @@ class App(QMainWindow):
 
     def setup_ui(self):
         self.setWindowTitle("Analyzer+")
-        self.setGeometry(100, 100, 450, 600)
+        self.setGeometry(100, 100, 900, 600)
         self.central_widget = QWidget(self)
         self.setCentralWidget(self.central_widget)
-        layout = QVBoxLayout(self.central_widget)
+        main_layout = QVBoxLayout(self.central_widget)
 
         self.toolbar = ResizableToolBar(self)
         self.addToolBar(Qt.TopToolBarArea, self.toolbar)
@@ -198,162 +199,94 @@ class App(QMainWindow):
         self.theme_dropdown.currentIndexChanged.connect(self.apply_selected_theme)
         self.toolbar.addWidget(self.theme_dropdown)
 
+        # Create a horizontal layout for the dropdowns
+        dropdown_layout = QHBoxLayout()
+
+        self.make_dropdown = QComboBox()
+        self.make_dropdown.addItem("Select Make")
+        self.make_dropdown.addItem("All")
+        self.make_dropdown.currentIndexChanged.connect(self.update_model_dropdown)
+        self.make_dropdown.currentIndexChanged.connect(self.clear_search_bar)
+        self.make_dropdown.focusInEvent = self.on_make_dropdown_focus  # Connect focus event
+        dropdown_layout.addWidget(self.make_dropdown)
+
+        self.model_dropdown = QComboBox()
+        self.model_dropdown.addItem("Select Model")
+        self.model_dropdown.currentIndexChanged.connect(self.handle_model_change)
+        dropdown_layout.addWidget(self.model_dropdown)
+
+        self.year_dropdown = QComboBox()
+        self.year_dropdown.addItem("Select Year")
+        self.year_dropdown.currentIndexChanged.connect(self.perform_search)
+        dropdown_layout.addWidget(self.year_dropdown)
+
+        main_layout.addLayout(dropdown_layout)  # Add the dropdown layout to the top of the main layout
+
         self.search_bar = QLineEdit()
         self.search_bar.setPlaceholderText("Enter DTC code or description")
-        self.search_bar.focusInEvent = self.clear_dropdowns_on_focus
         self.search_bar.returnPressed.connect(self.perform_search)
-        layout.addWidget(self.search_bar)
+        main_layout.addWidget(self.search_bar)
 
         self.filter_dropdown = QComboBox()
-        self.filter_dropdown.addItems(["Select List", "All", "Blacklist", "Goldenlist"])
+        self.filter_dropdown.addItems(["Select List", "All", "Blacklist", "Goldlist", "Gold and Black", "Prequals"])
         self.filter_dropdown.currentIndexChanged.connect(self.perform_search)
-        layout.addWidget(self.filter_dropdown)
-
-        self.search_make_dropdown = QComboBox()
-        self.search_make_dropdown.addItem("Select Make for List")
-        self.search_make_dropdown.currentIndexChanged.connect(self.perform_search)
-        layout.addWidget(self.search_make_dropdown)
+        main_layout.addWidget(self.filter_dropdown)
 
         self.suggestions_list = QListWidget(self)
         self.suggestions_list.setMaximumHeight(100)
         self.suggestions_list.hide()
-        layout.addWidget(self.suggestions_list)
+        main_layout.addWidget(self.suggestions_list)
 
         # Add a horizontal line separator
         separator = QFrame()
         separator.setFrameShape(QFrame.HLine)
         separator.setFrameShadow(QFrame.Sunken)
-        layout.addWidget(separator)
+        main_layout.addWidget(separator)
 
-        self.make_dropdown = QComboBox()
-        self.make_dropdown.addItem("Select Make")
-        self.make_dropdown.currentIndexChanged.connect(self.update_model_dropdown)
-        self.make_dropdown.currentIndexChanged.connect(self.clear_search_bar)
-        layout.addWidget(self.make_dropdown)
-        
-        self.make_dropdown.focusInEvent = self.make_dropdown_focus_in
+        self.splitter = QSplitter(Qt.Horizontal)
 
-        self.model_dropdown = QComboBox()
-        self.model_dropdown.addItem("Select Model")
-        self.model_dropdown.currentIndexChanged.connect(self.handle_model_change)
-        layout.addWidget(self.model_dropdown)
+        self.left_panel = QTextBrowser()
+        self.splitter.addWidget(self.left_panel)
 
-        self.year_dropdown = QComboBox()
-        self.year_dropdown.addItem("Select Year")
-        self.year_dropdown.currentIndexChanged.connect(self.perform_search)
-        layout.addWidget(self.year_dropdown)
+        self.right_panel = QTextBrowser()
+        self.splitter.addWidget(self.right_panel)
 
-        self.display_area = QTextBrowser()
-        self.display_area.setReadOnly(True)
-        self.display_area.setOpenExternalLinks(True)
-        layout.addWidget(self.display_area)
+        main_layout.addWidget(self.splitter)
 
-        opacity_layout = QHBoxLayout()
-        spacer_left = QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum)
-        spacer_right = QSpacerItem(40, 20, QSizePolicy.Expanding, QSizePolicy.Minimum)
+        # Add transparency bar
+        transparency_layout = QHBoxLayout()
         self.opacity_label = QLabel("Transparency")
         self.opacity_slider = QSlider(Qt.Horizontal)
         self.opacity_slider.setMinimum(20)
         self.opacity_slider.setMaximum(100)
         self.opacity_slider.setValue(100)
         self.opacity_slider.valueChanged.connect(self.change_opacity)
-
-        self.opacity_slider.setStyleSheet("""
-        QSlider::groove:horizontal {
-            border: 1px solid #bbb;
-            background: white;
-            height: 5px;
-            border-radius: 4px;
-        }
-
-        QSlider::sub-page:horizontal {
-            background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #66e, stop:1 #bbf);
-            background: qlineargradient(x1: 0, y1: 0.2, x2: 1, y2: 1, stop: 0 #5DCCFF, stop: 1 #5DCCFF);
-            border: 1px solid #777;
-            height: 10px;
-            border-radius: 4px;
-        }
-
-        QSlider::add-page:horizontal {
-            background: #fff;
-            border: 1px solid #777;
-            height: 10px;
-            border-radius: 4px;
-        }
-
-        QSlider::handle:horizontal {
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #eee, stop:1 #ccc);
-            border: 1px solid #777;
-            width: 18px;
-            margin-top: -4px;
-            margin-bottom: -4px;
-            border-radius: 4px;
-        }
-
-        QSlider::handle:horizontal:hover {
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #fff, stop:1 #ddd);
-            border: 1px solid #444;
-            border-radius: 4px;
-        }
-
-        QSlider::sub-page:horizontal:disabled {
-            background: #bbb;
-            border-color: #999;
-        }
-
-        QSlider::add-page:horizontal:disabled {
-            background: #eee;
-            border-color: #999;
-        }
-
-        QSlider::handle:horizontal:disabled {
-            background: #eee;
-            border: 1px solid #aaa;
-            border-radius: 4px;
-        }
-        """)
-
-        opacity_layout.addItem(spacer_left)
-        opacity_layout.addWidget(self.opacity_label, alignment=Qt.AlignCenter)
-        opacity_layout.addWidget(self.opacity_slider)
-        opacity_layout.addItem(spacer_right)
-
-        layout.addLayout(opacity_layout)
+        transparency_layout.addWidget(self.opacity_label)
+        transparency_layout.addWidget(self.opacity_slider)
+        main_layout.addLayout(transparency_layout)
 
         self.apply_selected_theme()
+        self.populate_dropdowns()
 
-        self.populate_search_make_dropdown()
-
-    def populate_search_make_dropdown(self):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        makes = set()
-
-        query = "SELECT DISTINCT carMake FROM blacklist UNION SELECT DISTINCT carMake FROM goldenlist"
-        cursor.execute(query)
-        rows = cursor.fetchall()
-        makes.update(row[0] for row in rows)
-
-        conn.close()
-
-        self.search_make_dropdown.clear()
-        self.search_make_dropdown.addItem("Select Make for List")
-
-        makes = sorted(makes)
-        self.search_make_dropdown.addItems(makes)
-        logging.debug(f"Search makes populated: {makes}")
+    def on_make_dropdown_focus(self, event):
+        # Do nothing if "All" is selected
+        if self.make_dropdown.currentText() == "All":
+            return
+        # Set list dropdown to default "Select List" when focus is on make dropdown
+        self.filter_dropdown.setCurrentText("Select List")
+        QComboBox.focusInEvent(self.make_dropdown, event)
 
     def populate_search_make_dropdown(self):
-        self.search_make_dropdown.clear()
-        self.search_make_dropdown.addItem("Select Make for List")
+        self.make_dropdown.clear()
+        self.make_dropdown.addItem("Select Make")
+        self.make_dropdown.addItem("All")
         makes = sorted(set(item['Make'].strip() for item in self.data['prequal'] if item['Make'].strip() and item['Make'].strip().lower() != 'unknown'))
-        self.search_make_dropdown.addItems(makes)
+        self.make_dropdown.addItems(makes)
 
     def reset_filter_dropdown(self):
         self.filter_dropdown.setCurrentIndex(0)
 
     def make_dropdown_focus_in(self, event):
-        self.reset_filter_dropdown()
         QComboBox.focusInEvent(self.make_dropdown, event)
 
     def add_toolbar_button(self, text, slot, object_name):
@@ -412,7 +345,7 @@ class App(QMainWindow):
         FROM (
             SELECT dtcCode, dtcDescription FROM blacklist
             UNION
-            SELECT dtcCode, dtcDescription FROM goldenlist
+            SELECT dtcCode, dtcDescription FROM goldlist
         )
         WHERE dtcCode LIKE ? OR dtcDescription LIKE ?
         """
@@ -782,7 +715,7 @@ class App(QMainWindow):
                 logging.info(f"Data cleared from {config_type}")
             else:
                 cursor.execute("DROP TABLE IF EXISTS blacklist")
-                cursor.execute("DROP TABLE IF EXISTS goldenlist")
+                cursor.execute("DROP TABLE IF EXISTS goldlist")
                 cursor.execute("DROP TABLE IF EXISTS prequal")
                 initialize_db(self.db_path)
                 logging.info("Database reset complete.")
@@ -805,7 +738,7 @@ class App(QMainWindow):
 
     def export_to_csv(self, path):
         conn = sqlite3.connect(self.db_path)
-        for table in ['blacklist', 'goldenlist', 'prequal']:
+        for table in ['blacklist', 'goldlist', 'prequal']:
             df = pd.read_sql_query(f"SELECT * FROM {table}", conn)
             df.to_csv(f"{path}_{table}.csv", index=False)
         conn.close()
@@ -813,7 +746,7 @@ class App(QMainWindow):
 
     def export_to_json(self, path):
         conn = sqlite3.connect(self.db_path)
-        for table in ['blacklist', 'goldenlist', 'prequal']:
+        for table in ['blacklist', 'goldlist', 'prequal']:
             df = pd.read_sql_query(f"SELECT * FROM {table}", conn)
             df.to_json(f"{path}_{table}.json", orient='records', lines=True)
         conn.close()
@@ -821,7 +754,9 @@ class App(QMainWindow):
 
     def update_model_dropdown(self):
         selected_make = self.make_dropdown.currentText().strip()
-        if selected_make != "Select Make":
+        if selected_make == "All":
+            self.left_panel.clear()  # Clear the prequal display box
+        elif selected_make != "Select Make":
             models = [item['Model'] for item in self.data['prequal'] if item['Make'] == selected_make]
             unique_models = sorted(set(str(model) for model in models))
             self.model_dropdown.clear()
@@ -838,7 +773,7 @@ class App(QMainWindow):
         if ok and password == "ADAS":
             choice, ok = QInputDialog.getItem(self, "Admin Actions", "Select action:", ["Update Paths", "Clear Data"], 0, False)
             if ok and choice == "Clear Data":
-                config_type, ok = QInputDialog.getItem(self, "Clear Data", "Select configuration to clear or 'All' to reset database:", ["blacklist", "goldenlist", "prequal", "All"], 0, False)
+                config_type, ok = QInputDialog.getItem(self, "Clear Data", "Select configuration to clear or 'All' to reset database:", ["blacklist", "goldlist", "prequal", "All"], 0, False)
                 if ok:
                     if config_type == "All":
                         self.clear_data()
@@ -861,9 +796,6 @@ class App(QMainWindow):
         else:
             self.year_dropdown.clear()
             self.year_dropdown.addItem("Select Year")
-        
-        # Reset "Select Make for List" dropdown
-        self.search_make_dropdown.setCurrentIndex(0)
 
     def get_valid_excel_files(self, folder_path):
         file_pattern = re.compile(r'(.+)\.xlsx$', re.IGNORECASE)
@@ -878,7 +810,7 @@ class App(QMainWindow):
         return valid_files
 
     def manage_paths(self):
-        config_type, ok = QInputDialog.getItem(self, "Select Config Type", "Choose the configuration to update:", ["blacklist", "goldenlist", "prequal"], 0, False)
+        config_type, ok = QInputDialog.getItem(self, "Select Config Type", "Choose the configuration to update:", ["blacklist", "goldlist", "prequal"], 0, False)
         if ok:
             folder_path = QFileDialog.getExistingDirectory(self, "Select Directory")
             if folder_path:
@@ -890,7 +822,7 @@ class App(QMainWindow):
                 data_loaded = False
                 for filename, filepath in files.items():
                     try:
-                        if config_type in ['blacklist', 'goldenlist']:
+                        if config_type in ['blacklist', 'goldlist']:
                             result = load_excel_data_to_db(filepath, config_type, sheet_name=1)
                             if result != "Failed to load data":
                                 data_loaded = True
@@ -915,18 +847,18 @@ class App(QMainWindow):
 
     def load_configurations(self):
         logging.debug("Loading configurations...")
-        for config_type in ['blacklist', 'goldenlist', 'prequal']:
+        for config_type in ['blacklist', 'goldlist', 'prequal']:
             data = load_configuration(config_type, self.db_path)
             self.data[config_type] = data if data else []
             logging.debug(f"Loaded {len(data)} items for {config_type}")
         if 'prequal' in self.data:
             self.populate_dropdowns()
-        self.populate_search_make_dropdown()
-                
+
     def populate_dropdowns(self):
         logging.debug("Populating dropdowns...")
         self.make_dropdown.clear()
         self.make_dropdown.addItem("Select Make")
+        self.make_dropdown.addItem("All")
 
         makes = sorted(set(item['Make'].strip() for item in self.data['prequal'] if item['Make'].strip() and item['Make'].strip().lower() != 'unknown'))
 
@@ -935,44 +867,6 @@ class App(QMainWindow):
 
         self.make_dropdown.addItems(makes)
         logging.debug(f"Makes populated: {makes}")
-    
-    def search_dtc_codes(self, dtc_code, filter_type, selected_make_search):
-        conn = sqlite3.connect(self.db_path)
-        query = ""
-        
-        if filter_type == "All":
-            query = f"""
-            SELECT 'Blacklist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments
-            FROM blacklist
-            WHERE (dtcCode LIKE '%{dtc_code}%' OR dtcDescription LIKE '%{dtc_code}%')
-            UNION ALL
-            SELECT 'Goldenlist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments
-            FROM goldenlist
-            WHERE (dtcCode LIKE '%{dtc_code}%' OR dtcDescription LIKE '%{dtc_code}%');
-            """
-        elif filter_type == "Blacklist":
-            query = f"""
-            SELECT 'Blacklist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments
-            FROM blacklist
-            WHERE (dtcCode LIKE '%{dtc_code}%' OR dtcDescription LIKE '%{dtc_code}%');
-            """
-        else:
-            query = f"""
-            SELECT 'Goldenlist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments
-            FROM goldenlist
-            WHERE (dtcCode LIKE '%{dtc_code}%' OR dtcDescription LIKE '%{dtc_code}%');
-            """
-
-        if selected_make_search != "Select Make for List":
-            query = f"SELECT * FROM ({query}) WHERE carMake = '{selected_make_search}'"
-
-        df = pd.read_sql_query(query, conn)
-        conn.close()
-
-        if not df.empty:
-            self.display_area.setHtml(df.to_html(index=False, escape=False))
-        else:
-            self.display_area.setPlainText("No DTC code results found.")
 
     def perform_search(self):
         dtc_code = self.search_bar.text().strip().upper()
@@ -980,55 +874,108 @@ class App(QMainWindow):
         selected_make = self.make_dropdown.currentText()
         selected_model = self.model_dropdown.currentText()
         selected_year = self.year_dropdown.currentText()
-        selected_make_search = self.search_make_dropdown.currentText()
 
-        if selected_filter == "Select List" and selected_year == "Select Year":
-            self.display_area.setPlainText("Please select a valid list or year to search.")
+        # Clear display areas initially
+        self.left_panel.clear()
+        self.right_panel.clear()
+
+        # Display nothing if the default option in the list dropdown is selected
+        if selected_filter == "Select List":
             return
 
-        if selected_year != "Select Year":
-            self.search_make_dropdown.setCurrentIndex(0)  # Reset the "Select Make for List" dropdown to default
+        # Handle case where "All" is selected in list dropdown but no make is selected
+        if selected_filter == "All" and (selected_make == "Select Make" or selected_make == "All"):
+            QMessageBox.warning(self, "Selection Error", "Please select a vehicle for prequal information")
+            self.filter_dropdown.setCurrentText("Select List")
+            return
 
-        if dtc_code:
-            self.search_dtc_codes(dtc_code, selected_filter, selected_make_search)
-        elif selected_filter != "Select List" or selected_year != "Select Year":
+        # Handle prequals selection
+        if selected_filter == "Prequals":
+            if selected_make == "Select Make" or selected_make == "All":
+                QMessageBox.warning(self, "Selection Error", "Please select a vehicle for prequal information")
+                self.filter_dropdown.setCurrentText("Select List")
+                return
             results = []
+            self.splitter.widget(0).show()
+            self.splitter.widget(1).hide()  # Hide the right panel
+            self.splitter.widget(0).setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
             if selected_make != "Select Make" and selected_model != "Select Model" and selected_year != "Select Year":
                 results = [item for item in self.data['prequal']
                         if item['Make'] == selected_make and item['Model'] == selected_model and str(item['Year']) == selected_year]
+            elif selected_make == "All":
+                results = self.data['prequal']
             self.display_results(results, context='prequal')
-        else:
-            self.display_area.setPlainText("Please select Make, Model, and Year to see results.")
 
-    def search_dtc_codes(self, dtc_code, filter_type, selected_make_search):
+        # Handle Gold and Black, Blacklist, Goldlist selections
+        elif selected_filter in ["Gold and Black", "Blacklist", "Goldlist"]:
+            if not dtc_code and selected_make == "All":
+                self.right_panel.setPlainText("Please enter a DTC code or description to search.")
+                return
+            self.splitter.widget(0).hide()  # Hide the left panel
+            self.splitter.widget(1).show()
+            self.splitter.widget(1).setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            self.splitter.widget(1).resize(self.splitter.size())
+            self.search_dtc_codes(dtc_code, selected_filter, selected_make)
+
+        # Handle All selection
+        elif selected_filter == "All":
+            # Display prequal results in the left panel
+            self.splitter.widget(0).show()
+            self.splitter.widget(1).show()
+            self.splitter.widget(0).setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            self.splitter.widget(1).setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            prequal_results = []
+            if selected_make != "Select Make" and selected_model != "Select Model" and selected_year != "Select Year":
+                prequal_results = [item for item in self.data['prequal']
+                                if item['Make'] == selected_make and item['Model'] == selected_model and str(item['Year']) == selected_year]
+            elif selected_make == "All":
+                prequal_results = self.data['prequal']
+            self.display_results(prequal_results, context='prequal')
+
+            # Display gold and black list results in the right panel
+            if dtc_code:
+                self.search_dtc_codes(dtc_code, "Gold and Black", selected_make)
+            else:
+                self.display_gold_and_black(selected_make)
+
+        else:
+            self.right_panel.setPlainText("Please select a valid option.")
+
+    def search_dtc_codes(self, dtc_code, filter_type, selected_make):
         conn = sqlite3.connect(self.db_path)
         query = ""
 
-        if filter_type == "All":
-            query = f"""
-            SELECT 'Blacklist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments
-            FROM blacklist
-            WHERE (dtcCode LIKE '%{dtc_code}%' OR dtcDescription LIKE '%{dtc_code}%')
-            UNION ALL
-            SELECT 'Goldenlist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments
-            FROM goldenlist
-            WHERE (dtcCode LIKE '%{dtc_code}%' OR dtcDescription LIKE '%{dtc_code}%')
-            """
+        if filter_type == "All" or filter_type == "Gold and Black":
+            if selected_make == "All":
+                query = f"""
+                SELECT 'blacklist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments FROM blacklist
+                WHERE dtcCode LIKE '%{dtc_code}%' OR dtcDescription LIKE '%{dtc_code}%'
+                UNION ALL
+                SELECT 'goldlist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments FROM goldlist
+                WHERE dtcCode LIKE '%{dtc_code}%' OR dtcDescription LIKE '%{dtc_code}%'
+                """
+            else:
+                query = f"""
+                SELECT 'blacklist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments FROM blacklist
+                WHERE (dtcCode LIKE '%{dtc_code}%' OR dtcDescription LIKE '%{dtc_code}%') AND carMake = '{selected_make}'
+                UNION ALL
+                SELECT 'goldlist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments FROM goldlist
+                WHERE (dtcCode LIKE '%{dtc_code}%' OR dtcDescription LIKE '%{dtc_code}%') AND carMake = '{selected_make}'
+                """
         elif filter_type == "Blacklist":
             query = f"""
-            SELECT 'Blacklist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments
-            FROM blacklist
+            SELECT 'blacklist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments FROM blacklist
             WHERE (dtcCode LIKE '%{dtc_code}%' OR dtcDescription LIKE '%{dtc_code}%')
             """
-        else:
+            if selected_make != "Select Make" and selected_make != "All":
+                query += f" AND carMake = '{selected_make}'"
+        elif filter_type == "Goldlist":
             query = f"""
-            SELECT 'Goldenlist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments
-            FROM goldenlist
+            SELECT 'goldlist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments FROM goldlist
             WHERE (dtcCode LIKE '%{dtc_code}%' OR dtcDescription LIKE '%{dtc_code}%')
             """
-
-        if selected_make_search != "Select Make for List":
-            query = f"SELECT * FROM ({query}) WHERE carMake = '{selected_make_search}'"
+            if selected_make != "Select Make" and selected_make != "All":
+                query += f" AND carMake = '{selected_make}'"
 
         query += ";"  # Ensuring the query ends with a semicolon.
 
@@ -1036,15 +983,46 @@ class App(QMainWindow):
             df = pd.read_sql_query(query, conn)
         except Exception as e:
             logging.error(f"Failed to execute query: {query}\nError: {e}")
-            self.display_area.setPlainText("An error occurred while fetching the data.")
+            self.right_panel.setPlainText("An error occurred while fetching the data.")
             return
 
         conn.close()
 
         if not df.empty:
-            self.display_area.setHtml(df.to_html(index=False, escape=False))
+            self.right_panel.setHtml(df.to_html(index=False, escape=False))
         else:
-            self.display_area.setPlainText("No DTC code results found.")
+            self.right_panel.setPlainText("No DTC code results found.")
+
+    def display_gold_and_black(self, selected_make):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        if selected_make == "All":
+            query = """
+            SELECT 'blacklist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments FROM blacklist
+            UNION ALL
+            SELECT 'goldlist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments FROM goldlist
+            """
+        else:
+            query = f"""
+            SELECT 'blacklist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments FROM blacklist WHERE carMake = '{selected_make}'
+            UNION ALL
+            SELECT 'goldlist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments FROM goldlist WHERE carMake = '{selected_make}'
+            """
+        
+        try:
+            df = pd.read_sql_query(query, conn)
+        except Exception as e:
+            logging.error(f"Failed to execute query: {query}\nError: {e}")
+            self.right_panel.setPlainText("An error occurred while fetching the data.")
+            return
+
+        conn.close()
+
+        if not df.empty:
+            self.right_panel.setHtml(df.to_html(index=False, escape=False))
+        else:
+            self.right_panel.setPlainText("No DTC code results found.")
 
     def display_results(self, results, context='prequal'):
         display_text = ""
@@ -1056,7 +1034,9 @@ class App(QMainWindow):
                 continue
 
             link = result.get('Service Information Hyperlink', '#')
-            if not link.startswith(('http://', 'https://')):
+            if isinstance(link, float) and pd.isna(link):
+                link = '#'
+            elif not link.startswith(('http://', 'https://')):
                 link = 'http://' + link
 
             system_acronym = result.get('Protech Generic System Name.1', 'N/A')
@@ -1085,14 +1065,8 @@ class App(QMainWindow):
                 <b>Service Information:</b> <a href='{link}'>Click Here</a><br><br>
                 <b>Pre-Quals:</b> {calibration_prerequisites}<br><br>
                 """
-        self.display_area.setHtml(display_text)
-        self.display_area.setOpenExternalLinks(True)
-
-    def clear_dropdowns_on_focus(self, event):
-        self.make_dropdown.setCurrentIndex(0)
-        self.model_dropdown.setCurrentIndex(0)
-        self.year_dropdown.setCurrentIndex(0)
-        QLineEdit.focusInEvent(self.search_bar, event)
+            self.left_panel.setHtml(display_text)
+            self.left_panel.setOpenExternalLinks(True)
 
     def clear_search_bar(self):
         self.search_bar.clear()
