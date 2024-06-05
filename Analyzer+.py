@@ -875,10 +875,6 @@ class App(QMainWindow):
         selected_model = self.model_dropdown.currentText()
         selected_year = self.year_dropdown.currentText()
 
-        # Clear display areas initially
-        self.left_panel.clear()
-        self.right_panel.clear()
-
         # Display nothing if the default option in the list dropdown is selected
         if selected_filter == "Select List":
             return
