@@ -1668,58 +1668,44 @@ class App(QMainWindow):
         selected_model = self.model_dropdown.currentText()
         selected_year = self.year_dropdown.currentText()
 
+        # Clear all panels if no specific make/model/year is selected
         if selected_make == "Select Make" and selected_model == "Select Model" and selected_year == "Select Year":
-            return
-
-        if selected_make == "Select Make":
             self.left_panel.clear()
             self.right_panel.clear()
             self.mag_glass_panel.clear()
             return
 
+        # Log the search
         self.log_action(self.current_user, f"Performed search with DTC: {dtc_code}, Filter: {selected_filter}, Make: {selected_make}, Model: {selected_model}, Year: {selected_year}")
 
+        # Handle the "Select List" as a do-nothing case
         if selected_filter == "Select List":
             return
 
-        if selected_filter == "Prequals":
-            results = []
-            self.splitter.widget(0).show()
-            self.splitter.widget(1).hide()  # Hide the right panel
-            self.splitter.widget(2).hide()  # Hide the Mag Glass panel
-            if selected_make != "Select Make" and selected_model != "Select Model" and selected_year != "Select Year":
-                results = [item for item in self.data['prequal']
-                        if item['Make'] == selected_make and item['Model'] == selected_model and str(item['Year']) == selected_year]
-            elif selected_make == "All":
-                results = self.data['prequal']
-            self.display_results(results, context='prequal')
+        # Show or hide panels based on the selected filter and conditions
+        if selected_filter in ["Gold and Black", "Blacklist", "Goldlist", "Mag Glass", "All"]:
+            # Conditionally display panels, hide prequals if 'All' is selected for make
+            self.splitter.widget(0).setVisible(selected_filter in ["Prequals", "All"] and selected_make != "All")
+            self.splitter.widget(1).setVisible(selected_filter in ["Gold and Black", "Blacklist", "Goldlist", "All"])
+            self.splitter.widget(2).setVisible(selected_filter in ["Mag Glass", "All"])
 
-        elif selected_filter in ["Gold and Black", "Blacklist", "Goldlist"]:
+        # Restrict prequal searches when 'All' is selected for make
+        if selected_filter == "Prequals" and selected_make == "All":
+            QMessageBox.information(self, "Search Restricted", "Prequal search is not permitted when 'All' is selected for make.")
+            self.left_panel.clear()  # Ensure the prequals display box is cleared and remains hidden
+            return
+
+        # Handling searches based on the type
+        if selected_filter == "Prequals":
+            self.handle_prequal_search(selected_make, selected_model, selected_year)
+
+        if selected_filter in ["Gold and Black", "Blacklist", "Goldlist"]:
             if not dtc_code and selected_make == "All":
                 self.right_panel.setPlainText("Please enter a DTC code or description to search.")
-                return
-            self.splitter.widget(0).hide()  # Hide the left panel
-            self.splitter.widget(1).show()
-            self.splitter.widget(1).setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-            self.splitter.widget(1).resize(self.splitter.size())
-            self.search_dtc_codes(dtc_code, selected_filter, selected_make)
+            else:
+                self.search_dtc_codes(dtc_code, selected_filter, selected_make)
 
-        elif selected_filter == "All":
-            self.splitter.widget(0).show()
-            self.splitter.widget(1).show()
-            self.splitter.widget(2).show()
-            self.splitter.widget(0).setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-            self.splitter.widget(1).setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-            self.splitter.widget(2).setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-
-            prequal_results = []
-            if selected_make != "Select Make" and selected_model != "Select Model" and selected_year != "Select Year":
-                prequal_results = [item for item in self.data['prequal']
-                                if item['Make'] == selected_make and item['Model'] == selected_model and str(item['Year']) == selected_year]
-            elif selected_make == "All":
-                prequal_results = self.data['prequal']
-            self.display_results(prequal_results, context='prequal')
-
+        if selected_filter == "All":
             if dtc_code:
                 self.search_dtc_codes(dtc_code, "Gold and Black", selected_make)
             else:
@@ -1727,12 +1713,17 @@ class App(QMainWindow):
 
             self.display_mag_glass(selected_make)
 
-        elif selected_filter == "Mag Glass":
+        if selected_filter == "Mag Glass":
             self.display_mag_glass(selected_make)
 
-        else:
-            self.right_panel.setPlainText("Please select a valid option.")
-            self.mag_glass_panel.setPlainText("")
+    def handle_prequal_search(self, selected_make, selected_model, selected_year):
+        prequal_results = []
+        if selected_make != "Select Make" and selected_model != "Select Model" and selected_year != "Select Year":
+            prequal_results = [item for item in self.data['prequal']
+                            if item['Make'] == selected_make and item['Model'] == selected_model and str(item['Year']) == selected_year]
+        elif selected_make != "All":  # Ensure prequals are displayed only if 'All' is not selected
+            prequal_results = self.data['prequal']
+        self.display_results(prequal_results, context='prequal')
 
     def display_mag_glass(self, selected_make):
         conn = sqlite3.connect(self.db_path)
