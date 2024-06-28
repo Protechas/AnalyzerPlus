@@ -14,6 +14,36 @@ from PyQt5.QtGui import QIcon, QDesktopServices
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
+class PopOutWindow(QDialog):
+    def __init__(self, title, content, stylesheet, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setGeometry(100, 100, 600, 400)
+        
+        layout = QVBoxLayout()
+        
+        self.text_browser = QTextBrowser()
+        self.text_browser.setHtml(content)
+        layout.addWidget(self.text_browser)
+        
+        # Add transparency slider
+        transparency_layout = QHBoxLayout()
+        self.opacity_label = QLabel("Transparency")
+        self.opacity_slider = QSlider(Qt.Horizontal)
+        self.opacity_slider.setMinimum(20)
+        self.opacity_slider.setMaximum(100)
+        self.opacity_slider.setValue(100)
+        self.opacity_slider.valueChanged.connect(self.change_opacity)
+        transparency_layout.addWidget(self.opacity_label)
+        transparency_layout.addWidget(self.opacity_slider)
+        layout.addLayout(transparency_layout)
+
+        self.setLayout(layout)
+        self.setStyleSheet(stylesheet)  # Apply the stylesheet
+
+    def change_opacity(self, value):
+        self.setWindowOpacity(value / 100.0)
+
 class PinManagementDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -45,11 +75,10 @@ class PinManagementDialog(QDialog):
 
     def load_users_and_pins(self):
         self.user_list.clear()
-        conn = sqlite3.connect(self.db_path)
+        conn = self.parent().get_db_connection()
         cursor = conn.cursor()
         cursor.execute('SELECT pin, name FROM leader_log')
         users = cursor.fetchall()
-        conn.close()
         for pin, name in users:
             self.user_list.addItem(f"{pin} - {name}")
 
@@ -74,23 +103,21 @@ class PinManagementDialog(QDialog):
         current_item = self.user_list.currentItem()
         if current_item:
             pin, name = current_item.text().split(" - ")
-            conn = sqlite3.connect(self.db_path)
+            conn = self.parent().get_db_connection()
             cursor = conn.cursor()
             cursor.execute('DELETE FROM leader_log WHERE pin = ?', (pin,))
             conn.commit()
-            conn.close()
             self.load_users_and_pins()
             self.parent().log_action(self.parent().current_user, f"User removed: pin={pin}, name={name}")
 
     def save_user(self, pin, name, old_pin=None):
-        conn = sqlite3.connect(self.db_path)
+        conn = self.parent().get_db_connection()
         cursor = conn.cursor()
         if old_pin:
             cursor.execute('UPDATE leader_log SET pin = ?, name = ? WHERE pin = ?', (pin, name, old_pin))
         else:
             cursor.execute('INSERT INTO leader_log (pin, name) VALUES (?, ?)', (pin, name))
         conn.commit()
-        conn.close()
         self.load_users_and_pins()
         self.parent().log_action(self.parent().current_user, f"User added or updated: pin={pin}, name={name}")
 
@@ -207,6 +234,14 @@ def initialize_db(db_path='data.db'):
         cursor.execute('SELECT * FROM leader_log WHERE name = "Set Up"')
         if not cursor.fetchone():
             cursor.execute('INSERT INTO leader_log (pin, name) VALUES (?, ?)', ('0000', 'Set Up'))
+
+        # Create indexes on frequently queried columns
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_leader_log_pin ON leader_log (pin)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_leader_log_name ON leader_log (name)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_blacklist_dtcCode ON blacklist (dtcCode)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_blacklist_carMake ON blacklist (carMake)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_goldlist_dtcCode ON goldlist (dtcCode)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_goldlist_carMake ON goldlist (carMake)')
 
         conn.commit()
     except sqlite3.Error as e:
@@ -363,6 +398,7 @@ class App(QMainWindow):
         self.settings_file = 'settings.json'
         self.current_theme = 'Dark'
         self.current_user = None
+        self.connection_pool = None
         initialize_db(self.db_path)
         self.current_theme = self.get_last_logged_theme()  # Load the last logged theme
         self.data = {'blacklist': [], 'goldlist': [], 'prequal': [], 'mag_glass': []}
@@ -373,7 +409,7 @@ class App(QMainWindow):
         self.apply_saved_theme()  # Apply the last saved theme
 
     def get_last_logged_theme(self):
-        conn = sqlite3.connect(self.db_path)
+        conn = self.get_db_connection()
         cursor = conn.cursor()
         try:
             cursor.execute("SELECT action FROM user_actions WHERE action LIKE 'Selected theme:%' ORDER BY timestamp DESC LIMIT 1")
@@ -383,12 +419,10 @@ class App(QMainWindow):
                 return last_theme_action.split(":")[1].strip()
         except sqlite3.OperationalError as e:
             logging.error(f"Database error: {e}")
-        finally:
-            conn.close()
         return 'Dark'  # Default theme if none is found or if there's an error
 
     def log_action(self, user, action):
-        conn = sqlite3.connect(self.db_path)
+        conn = self.get_db_connection()
         cursor = conn.cursor()
         # Get the current time in CST
         cst = pytz.timezone('America/Chicago')
@@ -396,17 +430,15 @@ class App(QMainWindow):
         timestamp = now.strftime('%Y-%m-%d %H:%M:%S')
         cursor.execute('INSERT INTO user_actions (user, action, timestamp) VALUES (?, ?, ?)', (user, action, timestamp))
         conn.commit()
-        conn.close()
 
     def prompt_user_pin(self):
         while True:
             pin, ok = QInputDialog.getText(self, 'User Login', 'Enter your PIN:', QLineEdit.Password)
             if ok:
-                conn = sqlite3.connect(self.db_path)
+                conn = self.get_db_connection()
                 cursor = conn.cursor()
                 cursor.execute('SELECT name FROM leader_log WHERE pin = ?', (pin,))
                 result = cursor.fetchone()
-                conn.close()
                 if result:
                     self.current_user = result[0]
                     self.log_action(self.current_user, "Logged in")
@@ -510,7 +542,7 @@ class App(QMainWindow):
 
         self.year_dropdown = QComboBox()
         self.year_dropdown.addItem("Select Year")
-        self.year_dropdown.currentIndexChanged.connect(self.perform_search)
+        self.year_dropdown.currentIndexChanged.connect(self.on_year_selected)
         dropdown_layout.addWidget(self.year_dropdown)
 
         main_layout.addLayout(dropdown_layout)  # Add the dropdown layout to the top of the main layout
@@ -521,7 +553,7 @@ class App(QMainWindow):
         main_layout.addWidget(self.search_bar)
 
         self.filter_dropdown = QComboBox()
-        self.filter_dropdown.addItems(["Select List", "All", "Blacklist", "Goldlist", "Gold and Black", "Prequals", "Mag Glass"])
+        self.filter_dropdown.addItems(["Select List", "Blacklist", "Goldlist", "Prequals", "Mag Glass", "Gold and Black", "Black/Gold/Mag", "All"])
         self.filter_dropdown.currentIndexChanged.connect(self.filter_changed)  # Connect this to a new method
         main_layout.addWidget(self.filter_dropdown)
 
@@ -541,24 +573,51 @@ class App(QMainWindow):
         # Create container widgets for panels
         self.left_panel_container = QWidget()
         self.left_panel_layout = QVBoxLayout(self.left_panel_container)
+        
+        # Add label and pop out button for left panel
+        left_panel_header_layout = QHBoxLayout()
         self.left_panel_label = QLabel("Prequals")
-        self.left_panel_layout.addWidget(self.left_panel_label)
+        left_panel_header_layout.addWidget(self.left_panel_label)
+        self.left_panel_pop_out_button = QPushButton("PO")
+        self.left_panel_pop_out_button.setFixedSize(40, 30)
+        self.left_panel_pop_out_button.clicked.connect(lambda: self.pop_out_panel("Prequals", self.left_panel.toHtml()))
+        left_panel_header_layout.addWidget(self.left_panel_pop_out_button)
+        self.left_panel_layout.addLayout(left_panel_header_layout)
+        
         self.left_panel = QTextBrowser()
         self.left_panel_layout.addWidget(self.left_panel)
         self.splitter.addWidget(self.left_panel_container)
 
         self.right_panel_container = QWidget()
         self.right_panel_layout = QVBoxLayout(self.right_panel_container)
+        
+        # Add label and pop out button for right panel
+        right_panel_header_layout = QHBoxLayout()
         self.right_panel_label = QLabel("Gold and Black")
-        self.right_panel_layout.addWidget(self.right_panel_label)
+        right_panel_header_layout.addWidget(self.right_panel_label)
+        self.right_panel_pop_out_button = QPushButton("PO")
+        self.right_panel_pop_out_button.setFixedSize(40, 30)
+        self.right_panel_pop_out_button.clicked.connect(lambda: self.pop_out_panel("Gold and Black", self.right_panel.toHtml()))
+        right_panel_header_layout.addWidget(self.right_panel_pop_out_button)
+        self.right_panel_layout.addLayout(right_panel_header_layout)
+        
         self.right_panel = QTextBrowser()
         self.right_panel_layout.addWidget(self.right_panel)
         self.splitter.addWidget(self.right_panel_container)
 
         self.mag_glass_container = QWidget()
         self.mag_glass_layout = QVBoxLayout(self.mag_glass_container)
+        
+        # Add label and pop out button for mag glass panel
+        mag_glass_header_layout = QHBoxLayout()
         self.mag_glass_label = QLabel("Mag Glass")
-        self.mag_glass_layout.addWidget(self.mag_glass_label)
+        mag_glass_header_layout.addWidget(self.mag_glass_label)
+        self.mag_glass_pop_out_button = QPushButton("PO")
+        self.mag_glass_pop_out_button.setFixedSize(40, 30)
+        self.mag_glass_pop_out_button.clicked.connect(lambda: self.pop_out_panel("Mag Glass", self.mag_glass_panel.toHtml()))
+        mag_glass_header_layout.addWidget(self.mag_glass_pop_out_button)
+        self.mag_glass_layout.addLayout(mag_glass_header_layout)
+        
         self.mag_glass_panel = QTextBrowser()
         self.mag_glass_layout.addWidget(self.mag_glass_panel)
         self.splitter.addWidget(self.mag_glass_container)
@@ -584,16 +643,47 @@ class App(QMainWindow):
         self.populate_dropdowns()
         self.apply_dropdown_styles()  # Apply dropdown styles initially
 
+    def pop_out_panel(self, title, content):
+        pop_out_window = PopOutWindow(title, content, self.central_widget.styleSheet(), self)
+        pop_out_window.show()
+
+    def get_db_connection(self):
+        if not self.connection_pool:
+            self.connection_pool = sqlite3.connect(self.db_path)
+        return self.connection_pool
+
+    def on_year_selected(self):
+        selected_filter = self.filter_dropdown.currentText()
+        # Check if a specific list that requires updating on year change is selected
+        if selected_filter in ["Prequals", "Gold and Black", "Blacklist", "Goldlist", "Mag Glass", "All"]:
+            self.perform_search()
+
     def filter_changed(self):
         selected_filter = self.filter_dropdown.currentText()
+        selected_make = self.make_dropdown.currentText()
+        selected_year = self.year_dropdown.currentText()
+
+        # Reset model and year if make is set to "All"
+        if selected_make == "All":
+            self.model_dropdown.setCurrentIndex(0)
+            self.year_dropdown.setCurrentIndex(0)
+            selected_year = "Select Year"
+
+        # Check if 'All' or 'Prequals' is selected in the filter dropdown without a year selected
+        if selected_filter in ["All", "Prequals"] and selected_year == "Select Year":
+            QMessageBox.warning(self, "Selection Required", "Please select a year for All or Prequals")
+            self.filter_dropdown.setCurrentIndex(0)  # Reset the filter dropdown to the default value
+            self.left_panel.clear()  # Optionally clear the left panel
+            return  # Early return to stop further processing
+
         # Toggle visibility based on the filter selection
         if selected_filter == "Mag Glass":
             self.mag_glass_container.setVisible(True)
             self.left_panel_container.setVisible(False)
             self.right_panel_container.setVisible(False)
-        elif selected_filter == "All":
+        elif selected_filter in ["All", "Black/Gold/Mag"]:
             self.mag_glass_container.setVisible(True)
-            self.left_panel_container.setVisible(True)
+            self.left_panel_container.setVisible(selected_filter == "All" and selected_year != "Select Year")  # Only show if year is selected for All
             self.right_panel_container.setVisible(True)
         else:
             self.mag_glass_container.setVisible(False)
@@ -638,10 +728,10 @@ class App(QMainWindow):
     def toggle_mag_glass_panel(self):
         if self.mag_glass_container.isVisible():
             self.mag_glass_container.hide()
-            self.mag_glass_hide_show_button.setText("Show Mag Glass")
+            self.mag_glass_hide_show_button.setText("Hide Mag Glass")
         else:
             self.mag_glass_container.show()
-            self.mag_glass_hide_show_button.setText("Hide Mag Glass")
+            self.mag_glass_hide_show_button.setText("Show Mag Glass")
 
     def set_refresh_button_style(self):
         self.refresh_button.setStyleSheet("""
@@ -696,23 +786,21 @@ class App(QMainWindow):
 
     def load_users_and_pins(self):
         self.valid_pins = {}
-        conn = sqlite3.connect(self.db_path)
+        conn = self.get_db_connection()
         cursor = conn.cursor()
         cursor.execute('SELECT pin, name FROM leader_log')
         users = cursor.fetchall()
-        conn.close()
         for pin, name in users:
             self.valid_pins[pin] = name
 
     def log_leader_pin(self, pin):
-        conn = sqlite3.connect(self.db_path)
+        conn = self.get_db_connection()
         cursor = conn.cursor()
         cursor.execute('''
             INSERT INTO leader_log (pin, name)
             VALUES (?, ?)
         ''', (pin, self.valid_pins[pin]))
         conn.commit()
-        conn.close()
 
     def enable_ui(self):
         self.central_widget.setEnabled(True)
@@ -833,7 +921,7 @@ class App(QMainWindow):
             logging.debug("Input cleared, list hidden.")
 
     def get_suggestions(self, text):
-        conn = sqlite3.connect(self.db_path)
+        conn = self.get_db_connection()
         cursor = conn.cursor()
         query = """
         SELECT dtcCode || ' - ' || dtcDescription AS suggestion
@@ -846,7 +934,6 @@ class App(QMainWindow):
         """
         cursor.execute(query, ('%' + text + '%', '%' + text + '%'))
         suggestions = [row[0] for row in cursor.fetchall()]
-        conn.close()
         logging.debug(f"Suggestions fetched: {suggestions}")
         return suggestions
 
@@ -1386,13 +1473,15 @@ class App(QMainWindow):
 
     def closeEvent(self, event):
         self.log_action(self.current_user, f"Closed the program with theme: {self.current_theme}")
+        if self.connection_pool:
+            self.connection_pool.close()
         event.accept()
 
     def change_opacity(self, value):
         self.setWindowOpacity(value / 100.0)
 
     def clear_data(self, config_type=None):
-        conn = sqlite3.connect(self.db_path)
+        conn = self.get_db_connection()
         cursor = conn.cursor()
         try:
             if config_type:
@@ -1409,8 +1498,6 @@ class App(QMainWindow):
         except sqlite3.Error as e:
             logging.error(f"Failed to clear data: {e}")
             QMessageBox.critical(self, "Error", "Failed to clear database.")
-        finally:
-            conn.close()
         self.load_configurations()
 
     def export_data(self):
@@ -1424,46 +1511,60 @@ class App(QMainWindow):
                 self.export_to_json(fileName)
 
     def export_to_csv(self, path):
-        conn = sqlite3.connect(self.db_path)
+        conn = self.get_db_connection()
         try:
             for table in ['blacklist', 'goldlist', 'prequal', 'mag_glass']:
                 df = pd.read_sql_query(f"SELECT * FROM {table}", conn)
                 df.to_csv(f"{path}_{table}.csv", index=False)
-        
+            
             user_actions_df = pd.read_sql_query("SELECT * FROM user_actions", conn)
             user_actions_df.to_csv(f"{path}_user_actions.csv", index=False)
+            QMessageBox.information(self, "Export Successful", "Data exported successfully to CSV.")
+        except Exception as e:
+            logging.error(f"Failed to export data to CSV: {e}")
+            QMessageBox.critical(self, "Export Error", "Failed to export data to CSV.")
         finally:
             conn.close()
-        QMessageBox.information(self, "Export Successful", "Data exported successfully to CSV.")
 
     def export_to_json(self, path):
-        conn = sqlite3.connect(self.db_path)
+        conn = self.get_db_connection()
         try:
             for table in ['blacklist', 'goldlist', 'prequal', 'mag_glass']:
                 df = pd.read_sql_query(f"SELECT * FROM {table}", conn)
                 df.to_json(f"{path}_{table}.json", orient='records', lines=True)
-        
+            
             user_actions_df = pd.read_sql_query("SELECT * FROM user_actions", conn)
             user_actions_df.to_json(f"{path}_user_actions.json", orient='records', lines=True)
+            QMessageBox.information(self, "Export Successful", "Data exported successfully to JSON.")
+        except Exception as e:
+            logging.error(f"Failed to export data to JSON: {e}")
+            QMessageBox.critical(self, "Export Error", "Failed to export data to JSON.")
         finally:
             conn.close()
-        QMessageBox.information(self, "Export Successful", "Data exported successfully to JSON.")
 
     def update_model_dropdown(self):
         selected_make = self.make_dropdown.currentText().strip()
-        if selected_make == "All":
-            self.left_panel.clear()  # Clear the prequal display box
-            self.right_panel.clear()  # Clear the gold and black display box
-            self.model_dropdown.clear()
-            self.model_dropdown.addItem("Select Model")
-            self.year_dropdown.clear()
-            self.year_dropdown.addItem("Select Year")
-        elif selected_make != "Select Make":
+        selected_filter = self.filter_dropdown.currentText()
+
+        if selected_make == "All" and selected_filter in ["All", "Prequals"]:
+            QMessageBox.warning(self, "Selection Required", "Please select a vehicle for Prequals")
+            self.left_panel.clear()  # Optionally clear the prequals display if needed
+            self.model_dropdown.setCurrentIndex(0)
+            self.year_dropdown.setCurrentIndex(0)
+            return  # Early return to stop further processing
+
+        # Continue with the usual logic to update the model dropdown
+        if selected_make != "Select Make":
             models = [item['Model'] for item in self.data['prequal'] if item['Make'] == selected_make]
             unique_models = sorted(set(str(model) for model in models))
             self.model_dropdown.clear()
             self.model_dropdown.addItem("Select Model")
             self.model_dropdown.addItems(unique_models)
+        else:
+            self.model_dropdown.clear()
+            self.model_dropdown.addItem("Select Model")
+            self.year_dropdown.clear()
+            self.year_dropdown.addItem("Select Year")
 
     def handle_model_change(self, index):
         selected_model = self.model_dropdown.currentText().strip()
@@ -1668,12 +1769,23 @@ class App(QMainWindow):
         selected_model = self.model_dropdown.currentText()
         selected_year = self.year_dropdown.currentText()
 
+        # Reset model and year if make is set to "All"
+        if selected_make == "All":
+            self.model_dropdown.setCurrentIndex(0)
+            self.year_dropdown.setCurrentIndex(0)
+            selected_model = "Select Model"
+            selected_year = "Select Year"
+
         # Clear all panels if no specific make/model/year is selected
         if selected_make == "Select Make" and selected_model == "Select Model" and selected_year == "Select Year":
-            self.left_panel.clear()
-            self.right_panel.clear()
-            self.mag_glass_panel.clear()
+            self.clear_display_panels()
             return
+
+        # If 'All' or 'Prequals' is selected in the filter dropdown without a year selected, show warning and clear the left panel
+        if selected_filter in ["All", "Prequals"] and selected_year == "Select Year":
+            QMessageBox.warning(self, "Selection Required", "Please select a year for All or Prequals")
+            self.left_panel.clear()  # Optionally clear the prequals display if needed
+            return  # Early return to stop further processing
 
         # Log the search
         self.log_action(self.current_user, f"Performed search with DTC: {dtc_code}, Filter: {selected_filter}, Make: {selected_make}, Model: {selected_model}, Year: {selected_year}")
@@ -1683,46 +1795,59 @@ class App(QMainWindow):
             return
 
         # Show or hide panels based on the selected filter and conditions
-        if selected_filter in ["Gold and Black", "Blacklist", "Goldlist", "Mag Glass", "All"]:
-            # Conditionally display panels, hide prequals if 'All' is selected for make
-            self.splitter.widget(0).setVisible(selected_filter in ["Prequals", "All"] and selected_make != "All")
-            self.splitter.widget(1).setVisible(selected_filter in ["Gold and Black", "Blacklist", "Goldlist", "All"])
-            self.splitter.widget(2).setVisible(selected_filter in ["Mag Glass", "All"])
+        self.update_panel_visibility(selected_filter, selected_make)
 
-        # Restrict prequal searches when 'All' is selected for make
-        if selected_filter == "Prequals" and selected_make == "All":
-            QMessageBox.information(self, "Search Restricted", "Prequal search is not permitted when 'All' is selected for make.")
-            self.left_panel.clear()  # Ensure the prequals display box is cleared and remains hidden
-            return
+        # Check conditions and update displays
+        self.update_displays_based_on_filter(selected_filter, dtc_code, selected_make, selected_model, selected_year)
 
-        # Handling searches based on the type
-        if selected_filter == "Prequals":
+    def clear_display_panels(self):
+        self.left_panel.clear()
+        self.right_panel.clear()
+        self.mag_glass_panel.clear()
+
+    def update_panel_visibility(self, selected_filter, selected_make):
+        self.splitter.widget(0).setVisible(selected_filter in ["Prequals", "All"] and selected_make != "All")
+        self.splitter.widget(1).setVisible(selected_filter in ["Gold and Black", "Blacklist", "Goldlist", "Black/Gold/Mag", "All"])
+        self.splitter.widget(2).setVisible(selected_filter in ["Mag Glass", "Black/Gold/Mag", "All"])
+
+    def update_displays_based_on_filter(self, selected_filter, dtc_code, selected_make, selected_model, selected_year):
+        if selected_filter == "All":
+            # Display all categories including prequals, gold and black lists, and mag glass
+            if selected_year != "Select Year":
+                self.handle_prequal_search(selected_make, selected_model, selected_year)
+            if dtc_code:
+                self.search_dtc_codes(dtc_code, "Gold and Black", selected_make)  # This will depend on DTC input
+            else:
+                self.display_gold_and_black(selected_make)  # Display gold and black lists based on selected make
+            self.display_mag_glass(selected_make)  # Display mag glass data
+
+        elif selected_filter == "Prequals":
             self.handle_prequal_search(selected_make, selected_model, selected_year)
 
-        if selected_filter in ["Gold and Black", "Blacklist", "Goldlist"]:
+        elif selected_filter == "Black/Gold/Mag":
+            self.display_gold_and_black(selected_make)  # Display gold and black lists based on selected make
+            self.display_mag_glass(selected_make)  # Display mag glass data
+
+        elif selected_filter in ["Gold and Black", "Blacklist", "Goldlist"]:
             if not dtc_code and selected_make == "All":
                 self.right_panel.setPlainText("Please enter a DTC code or description to search.")
             else:
                 self.search_dtc_codes(dtc_code, selected_filter, selected_make)
 
-        if selected_filter == "All":
-            if dtc_code:
-                self.search_dtc_codes(dtc_code, "Gold and Black", selected_make)
-            else:
-                self.display_gold_and_black(selected_make)
-
-            self.display_mag_glass(selected_make)
-
-        if selected_filter == "Mag Glass":
+        elif selected_filter == "Mag Glass":
             self.display_mag_glass(selected_make)
 
     def handle_prequal_search(self, selected_make, selected_model, selected_year):
-        prequal_results = []
-        if selected_make != "Select Make" and selected_model != "Select Model" and selected_year != "Select Year":
+        if selected_make == "All":  # If 'All' is selected for make, ignore make in the filtering
             prequal_results = [item for item in self.data['prequal']
-                            if item['Make'] == selected_make and item['Model'] == selected_model and str(item['Year']) == selected_year]
-        elif selected_make != "All":  # Ensure prequals are displayed only if 'All' is not selected
-            prequal_results = self.data['prequal']
+                            if (selected_model == "Select Model" or item['Model'] == selected_model) and
+                                (selected_year == "Select Year" or str(item['Year']) == selected_year)]
+        else:
+            prequal_results = [item for item in self.data['prequal']
+                            if (item['Make'] == selected_make) and
+                                (selected_model == "Select Model" or item['Model'] == selected_model) and
+                                (selected_year == "Select Year" or str(item['Year']) == selected_year)]
+        
         self.display_results(prequal_results, context='prequal')
 
     def display_mag_glass(self, selected_make):
@@ -1731,14 +1856,14 @@ class App(QMainWindow):
 
         if selected_make == "All":
             query = """
-            SELECT [Generic System Name], [ADAS Module Name], [Car Make], [Manufacturer], [AUTEL or BOSCH]
+            SELECT "Generic System Name", "ADAS Module Name", "Car Make", "Manufacturer", "AUTEL or BOSCH"
             FROM mag_glass
             """
         else:
             query = f"""
-            SELECT [Generic System Name], [ADAS Module Name], [Car Make], [Manufacturer], [AUTEL or BOSCH]
+            SELECT "Generic System Name", "ADAS Module Name", "Car Make", "Manufacturer", "AUTEL or BOSCH"
             FROM mag_glass
-            WHERE [Car Make] = '{selected_make}'
+            WHERE "Car Make" = '{selected_make}'
             """
 
         try:
@@ -1756,7 +1881,7 @@ class App(QMainWindow):
             self.mag_glass_panel.setPlainText("No results found for Mag Glass.")
 
     def search_mag_glass(self, selected_make):
-        conn = sqlite3.connect(self.db_path)
+        conn = self.get_db_connection()
         cursor = conn.cursor()
 
         query = f"""
@@ -1774,15 +1899,13 @@ class App(QMainWindow):
             self.mag_glass_panel.setPlainText("An error occurred while fetching the data.")
             return
 
-        conn.close()
-
         if not df.empty:
             self.mag_glass_panel.setHtml(df.to_html(index=False, escape=False))
         else:
             self.mag_glass_panel.setPlainText("No Mag Glass results found.")
 
     def search_dtc_codes(self, dtc_code, filter_type, selected_make):
-        conn = sqlite3.connect(self.db_path)
+        conn = self.get_db_connection()
         query = ""
 
         if filter_type == "All" or filter_type == "Gold and Black":
@@ -1826,8 +1949,6 @@ class App(QMainWindow):
             self.right_panel.setPlainText("An error occurred while fetching the data.")
             return
 
-        conn.close()
-
         if not df.empty:
             self.right_panel.setHtml(df.to_html(index=False, escape=False))
         else:
@@ -1836,7 +1957,7 @@ class App(QMainWindow):
     def display_gold_and_black(self, selected_make):
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        
+
         if selected_make == "All":
             query = """
             SELECT 'blacklist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments FROM blacklist
@@ -1849,7 +1970,7 @@ class App(QMainWindow):
             UNION ALL
             SELECT 'goldlist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments FROM goldlist WHERE carMake = '{selected_make}'
             """
-        
+
         try:
             df = pd.read_sql_query(query, conn)
         except Exception as e:
