@@ -422,14 +422,20 @@ class App(QMainWindow):
         return 'Dark'  # Default theme if none is found or if there's an error
 
     def log_action(self, user, action):
-        conn = self.get_db_connection()
-        cursor = conn.cursor()
-        # Get the current time in CST
-        cst = pytz.timezone('America/Chicago')
-        now = datetime.now(cst)
-        timestamp = now.strftime('%Y-%m-%d %H:%M:%S')
-        cursor.execute('INSERT INTO user_actions (user, action, timestamp) VALUES (?, ?, ?)', (user, action, timestamp))
-        conn.commit()
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            # Get the current time in CST
+            cst = pytz.timezone('America/Chicago')
+            now = datetime.now(cst)
+            timestamp = now.strftime('%Y-%m-%d %H:%M:%S')
+            cursor.execute('INSERT INTO user_actions (user, action, timestamp) VALUES (?, ?, ?)', (user, action, timestamp))
+            conn.commit()
+        except sqlite3.Error as e:
+            logging.error(f"Failed to log action: {e}")
+        finally:
+            if conn:
+                conn.close()
 
     def prompt_user_pin(self):
         while True:
@@ -550,6 +556,7 @@ class App(QMainWindow):
         self.search_bar = QLineEdit()
         self.search_bar.setPlaceholderText("Enter DTC code or description")
         self.search_bar.returnPressed.connect(self.perform_search)
+        self.year_dropdown.currentIndexChanged.connect(self.perform_search)
         main_layout.addWidget(self.search_bar)
 
         self.filter_dropdown = QComboBox()
@@ -663,27 +670,24 @@ class App(QMainWindow):
         selected_make = self.make_dropdown.currentText()
         selected_year = self.year_dropdown.currentText()
 
-        # Reset model and year if make is set to "All"
         if selected_make == "All":
             self.model_dropdown.setCurrentIndex(0)
             self.year_dropdown.setCurrentIndex(0)
             selected_year = "Select Year"
 
-        # Check if 'All' or 'Prequals' is selected in the filter dropdown without a year selected
         if selected_filter in ["All", "Prequals"] and selected_year == "Select Year":
             QMessageBox.warning(self, "Selection Required", "Please select a year for All or Prequals")
             self.filter_dropdown.setCurrentIndex(0)  # Reset the filter dropdown to the default value
             self.left_panel.clear()  # Optionally clear the left panel
             return  # Early return to stop further processing
 
-        # Toggle visibility based on the filter selection
         if selected_filter == "Mag Glass":
             self.mag_glass_container.setVisible(True)
             self.left_panel_container.setVisible(False)
             self.right_panel_container.setVisible(False)
         elif selected_filter in ["All", "Black/Gold/Mag"]:
             self.mag_glass_container.setVisible(True)
-            self.left_panel_container.setVisible(selected_filter == "All" and selected_year != "Select Year")  # Only show if year is selected for All
+            self.left_panel_container.setVisible(selected_filter == "All" and selected_year != "Select Year")
             self.right_panel_container.setVisible(True)
         else:
             self.mag_glass_container.setVisible(False)
@@ -948,8 +952,13 @@ class App(QMainWindow):
             self.perform_search()
 
     def handle_model_change(self, index):
-        if index != 0:
+        selected_model = self.model_dropdown.currentText().strip()
+        if selected_model != "Select Model":
             self.update_year_dropdown()
+        else:
+            self.year_dropdown.clear()
+            self.year_dropdown.addItem("Select Year")
+        self.perform_search()
 
     def toggle_theme(self):
         if self.dark_theme_enabled:
@@ -1553,7 +1562,6 @@ class App(QMainWindow):
             self.year_dropdown.setCurrentIndex(0)
             return  # Early return to stop further processing
 
-        # Continue with the usual logic to update the model dropdown
         if selected_make != "Select Make":
             models = [item['Model'] for item in self.data['prequal'] if item['Make'] == selected_make]
             unique_models = sorted(set(str(model) for model in models))
@@ -1596,6 +1604,7 @@ class App(QMainWindow):
     def update_year_dropdown(self):
         selected_make = self.make_dropdown.currentText().strip()
         selected_model = self.model_dropdown.currentText().strip()
+
         if selected_make != "Select Make" and selected_model != "Select Model":
             years = [str(item['Year']) for item in self.data['prequal'] if item['Make'] == selected_make and item['Model'] == selected_model]
             unique_years = sorted(set(years))
@@ -1605,7 +1614,6 @@ class App(QMainWindow):
         else:
             self.year_dropdown.clear()
             self.year_dropdown.addItem("Select Year")
-        self.perform_search()
 
     def get_valid_excel_files(self, folder_path):
         file_pattern = re.compile(r'(.+)\.xlsx$', re.IGNORECASE)
@@ -1851,34 +1859,33 @@ class App(QMainWindow):
         self.display_results(prequal_results, context='prequal')
 
     def display_mag_glass(self, selected_make):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-
-        if selected_make == "All":
-            query = """
-            SELECT "Generic System Name", "ADAS Module Name", "Car Make", "Manufacturer", "AUTEL or BOSCH"
-            FROM mag_glass
-            """
-        else:
-            query = f"""
-            SELECT "Generic System Name", "ADAS Module Name", "Car Make", "Manufacturer", "AUTEL or BOSCH"
-            FROM mag_glass
-            WHERE "Car Make" = '{selected_make}'
-            """
-
         try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            if selected_make == "All":
+                query = """
+                SELECT "Generic System Name", "ADAS Module Name", "Car Make", "Manufacturer", "AUTEL or BOSCH"
+                FROM mag_glass
+                """
+            else:
+                query = f"""
+                SELECT "Generic System Name", "ADAS Module Name", "Car Make", "Manufacturer", "AUTEL or BOSCH"
+                FROM mag_glass
+                WHERE "Car Make" = '{selected_make}'
+                """
+
             df = pd.read_sql_query(query, conn)
+            if not df.empty:
+                self.mag_glass_panel.setHtml(df.to_html(index=False, escape=False))
+            else:
+                self.mag_glass_panel.setPlainText("No results found for Mag Glass.")
         except Exception as e:
             logging.error(f"Failed to execute query: {query}\nError: {e}")
             self.mag_glass_panel.setPlainText("An error occurred while fetching the data.")
-            return
-
-        conn.close()
-
-        if not df.empty:
-            self.mag_glass_panel.setHtml(df.to_html(index=False, escape=False))
-        else:
-            self.mag_glass_panel.setPlainText("No results found for Mag Glass.")
+        finally:
+            if conn:
+                conn.close()
 
     def search_mag_glass(self, selected_make):
         conn = self.get_db_connection()
@@ -1955,30 +1962,34 @@ class App(QMainWindow):
             self.right_panel.setPlainText("No DTC code results found.")
 
     def display_gold_and_black(self, selected_make):
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-
-        if selected_make == "All":
-            query = """
-            SELECT 'blacklist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments FROM blacklist
-            UNION ALL
-            SELECT 'goldlist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments FROM goldlist
-            """
-        else:
-            query = f"""
-            SELECT 'blacklist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments FROM blacklist WHERE carMake = '{selected_make}'
-            UNION ALL
-            SELECT 'goldlist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments FROM goldlist WHERE carMake = '{selected_make}'
-            """
-
         try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            if selected_make == "All":
+                query = """
+                SELECT 'blacklist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments FROM blacklist
+                UNION ALL
+                SELECT 'goldlist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments FROM goldlist
+                """
+            else:
+                query = f"""
+                SELECT 'blacklist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments FROM blacklist WHERE carMake = '{selected_make}'
+                UNION ALL
+                SELECT 'goldlist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments FROM goldlist WHERE carMake = '{selected_make}'
+                """
+            
             df = pd.read_sql_query(query, conn)
+            if not df.empty:
+                self.right_panel.setHtml(df.to_html(index=False, escape=False))
+            else:
+                self.right_panel.setPlainText("No DTC code results found.")
         except Exception as e:
             logging.error(f"Failed to execute query: {query}\nError: {e}")
             self.right_panel.setPlainText("An error occurred while fetching the data.")
-            return
-
-        conn.close()
+        finally:
+            if conn:
+                conn.close()
 
         if not df.empty:
             self.right_panel.setHtml(df.to_html(index=False, escape=False))
@@ -1988,6 +1999,13 @@ class App(QMainWindow):
     def display_results(self, results, context='prequal'):
         display_text = ""
         for result in results:
+            # Check if any relevant field is "N/A" or None
+            if any(
+                result.get(key) in [None, 'N/A'] 
+                for key in ['Make', 'Model', 'Year', 'Calibration Type', 'Protech Generic System Name.1', 'Parts Code Table Value', 'Calibration Pre-Requisites']
+            ):
+                continue  # Skip this result
+
             calibration_type = result.get('Calibration Type', 'N/A')
 
             # Handle link safely
