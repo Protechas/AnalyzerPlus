@@ -1,3 +1,5 @@
+import csv
+import shutil
 import sys
 import os
 import json
@@ -249,19 +251,41 @@ def initialize_db(db_path='data.db'):
     finally:
         conn.close()
 
+def get_db_connection(self):
+    return sqlite3.connect(self.db_path)
+
 def save_path_to_db(config_type, folder_path, db_path='data.db'):
+    conn = sqlite3.connect(db_path)
     try:
-        conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
         cursor.execute('''
             INSERT OR REPLACE INTO paths (config_type, folder_path)
             VALUES (?, ?)
         ''', (config_type, folder_path))
         conn.commit()
+
+        # Normalize paths to avoid issues with backslashes
+        backup_path = os.path.normpath(os.path.join(folder_path, f"{config_type}_backup"))
+        folder_path = os.path.normpath(folder_path)
+
+        if os.path.exists(backup_path):
+            logging.warning(f"Backup path already exists: {backup_path}. Removing existing backup.")
+            shutil.rmtree(backup_path)
+
+        logging.info(f"Copying from {folder_path} to {backup_path}.")
+        try:
+            shutil.copytree(folder_path, backup_path, symlinks=False, ignore_dangling_symlinks=True)
+        except shutil.Error as e:
+            logging.error(f"Error during copy operation: {e}")
+        except OSError as e:
+            logging.error(f"OS error during copy operation: {e}")
     except sqlite3.Error as e:
         logging.error(f"Failed to save path to database: {e}")
     finally:
         conn.close()
+
+def handle_error(func, path, exc_info):
+    logging.error(f"Error copying {path}: {exc_info}")
 
 def load_path_from_db(config_type, db_path='data.db'):
     try:
@@ -299,12 +323,13 @@ def load_configuration(config_type, db_path='data.db'):
         cursor.execute(query)
         data = cursor.fetchall()
         if data:
-            logging.debug(f"Data retrieved from {config_type}: {data[:3]}...")
+            logging.debug(f"Data retrieved from {config_type}: {data[:3]}...")  # Show first 3 entries for brevity
         for item in data:
             try:
                 entries = json.loads(item[0])
                 for entry in entries:
-                    entry['Make'] = str(entry['Make']) if pd.notna(entry['Make']) else "Unknown"
+                    entry['Make'] = str(entry['Make']).strip() if pd.notna(entry['Make']) else "Unknown"
+                    entry['Model'] = str(entry['Model']).strip() if pd.notna(entry['Model']) else "Unknown"
                 result.extend(entries)
             except json.JSONDecodeError as je:
                 logging.error(f"JSON decoding error for item {item[0]}: {je}")
@@ -312,7 +337,6 @@ def load_configuration(config_type, db_path='data.db'):
         logging.error(f"SQLite error encountered when loading configuration for {config_type}: {e}")
     finally:
         conn.close()
-        logging.debug(f"Connection to database '{db_path}' closed.")
         return result
 
 def load_excel_data_to_db(excel_path, table_name, db_path='data.db', sheet_index=0, parent=None):
@@ -399,9 +423,12 @@ class App(QMainWindow):
         self.current_theme = 'Dark'
         self.current_user = None
         self.connection_pool = None
+        self.conn = sqlite3.connect(self.db_path)
         initialize_db(self.db_path)
         self.current_theme = self.get_last_logged_theme()  # Load the last logged theme
         self.data = {'blacklist': [], 'goldlist': [], 'prequal': [], 'mag_glass': []}
+        self.make_map = {}  # Initialize make_map
+        self.model_map = {}  # Initialize model_map
         self.setup_ui()
         self.prompt_user_pin()  # Prompt for PIN during initialization
         self.load_configurations()
@@ -422,10 +449,9 @@ class App(QMainWindow):
         return 'Dark'  # Default theme if none is found or if there's an error
 
     def log_action(self, user, action):
+        conn = self.get_db_connection()
         try:
-            conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
-            # Get the current time in CST
             cst = pytz.timezone('America/Chicago')
             now = datetime.now(cst)
             timestamp = now.strftime('%Y-%m-%d %H:%M:%S')
@@ -434,28 +460,30 @@ class App(QMainWindow):
         except sqlite3.Error as e:
             logging.error(f"Failed to log action: {e}")
         finally:
-            if conn:
-                conn.close()
+            conn.close()
 
     def prompt_user_pin(self):
         while True:
             pin, ok = QInputDialog.getText(self, 'User Login', 'Enter your PIN:', QLineEdit.Password)
             if ok:
-                conn = self.get_db_connection()
+                conn = self.get_db_connection()  # Ensure the connection is opened for each attempt
                 cursor = conn.cursor()
                 cursor.execute('SELECT name FROM leader_log WHERE pin = ?', (pin,))
                 result = cursor.fetchone()
                 if result:
                     self.current_user = result[0]
                     self.log_action(self.current_user, "Logged in")
+                    conn.close()
                     break
                 elif pin == '9716':  # Check for the standard PIN
                     self.current_user = "Set Up"
                     self.log_action(self.current_user, "Logged in with standard PIN")
+                    conn.close()
                     break
                 else:
                     QMessageBox.warning(self, "Access Denied", "Incorrect User PIN.")
                     self.log_action("Unknown", "Failed User PIN attempt")
+                    conn.close()
             else:
                 QMessageBox.warning(self, "Access Denied", "Login Cancelled.")
                 sys.exit()
@@ -499,7 +527,7 @@ class App(QMainWindow):
 
         # Create theme dropdown
         self.theme_dropdown = QComboBox()
-        themes = ["Dark", "Light", "Red", "Blue", "Green", "Yellow", "Pink", "Purple", "Teal", "Cyan", "Orange"]
+        themes = ["Dark", "Light", "Red", "Blue", "Green", "Yellow", "Pink", "Purple", "Teal", "Cyan", "Orange", "RGB"]
         self.theme_dropdown.addItems(themes)
         self.theme_dropdown.currentIndexChanged.connect(self.apply_selected_theme)
         button_theme_layout.addWidget(self.theme_dropdown)
@@ -655,9 +683,7 @@ class App(QMainWindow):
         pop_out_window.show()
 
     def get_db_connection(self):
-        if not self.connection_pool:
-            self.connection_pool = sqlite3.connect(self.db_path)
-        return self.connection_pool
+        return sqlite3.connect(self.db_path)
 
     def on_year_selected(self):
         selected_filter = self.filter_dropdown.currentText()
@@ -676,7 +702,6 @@ class App(QMainWindow):
             selected_year = "Select Year"
 
         if selected_filter in ["All", "Prequals"] and selected_year == "Select Year":
-            QMessageBox.warning(self, "Selection Required", "Please select a year for All or Prequals")
             self.filter_dropdown.setCurrentIndex(0)  # Reset the filter dropdown to the default value
             self.left_panel.clear()  # Optionally clear the left panel
             return  # Early return to stop further processing
@@ -953,11 +978,14 @@ class App(QMainWindow):
 
     def handle_model_change(self, index):
         selected_model = self.model_dropdown.currentText().strip()
+        logging.debug(f"Model selected: {selected_model}")
+
         if selected_model != "Select Model":
             self.update_year_dropdown()
         else:
             self.year_dropdown.clear()
             self.year_dropdown.addItem("Select Year")
+
         self.perform_search()
 
     def toggle_theme(self):
@@ -1010,6 +1038,8 @@ class App(QMainWindow):
             self.apply_color_theme("#00ffff", "#00b2b2", text_color="black")
         elif theme == "Orange":
             self.apply_color_theme("#ff8c00", "#ff4500", text_color="black")
+        elif theme == "RGB":
+            self.apply_color_theme("#ff0000", "#0000ff", "#00ff00")  # Applying an RGB theme with red, green, and blue
 
         self.apply_button_styles()  # Apply the button styles after setting the theme
         self.apply_dropdown_styles()  # Apply dropdown styles
@@ -1512,22 +1542,36 @@ class App(QMainWindow):
     def export_data(self):
         self.log_action(self.current_user, "Clicked Export button")
         options = QFileDialog.Options()
-        fileName, _ = QFileDialog.getSaveFileName(self,"QFileDialog.getSaveFileName()","","All Files (*);;Text Files (*.txt);;CSV Files (*.csv);;JSON Files (*.json)", options=options)
+        fileName, _ = QFileDialog.getSaveFileName(self, "QFileDialog.getSaveFileName()", "", "All Files (*);;Text Files (*.txt);;CSV Files (*.csv);;JSON Files (*.json)", options=options)
         if fileName:
             if fileName.endswith('.csv'):
                 self.export_to_csv(fileName)
             elif fileName.endswith('.json'):
                 self.export_to_json(fileName)
 
+            # Copy the folders with the new name
+            conn = self.get_db_connection()  # Ensure the connection is open
+            try:
+                cursor = conn.cursor()
+                cursor.execute("SELECT * FROM paths")
+                paths = cursor.fetchall()
+                for config_type, folder_path in paths:
+                    if os.path.exists(folder_path):
+                        new_folder_name = os.path.join(os.path.dirname(fileName), f"{os.path.basename(fileName)}_{config_type}_folder")
+                        if os.path.exists(new_folder_name):
+                            shutil.rmtree(new_folder_name)
+                        shutil.copytree(folder_path, new_folder_name)
+            except sqlite3.Error as e:
+                logging.error(f"Failed to retrieve paths from database: {e}")
+            finally:
+                conn.close()
+
     def export_to_csv(self, path):
         conn = self.get_db_connection()
         try:
-            for table in ['blacklist', 'goldlist', 'prequal', 'mag_glass']:
-                df = pd.read_sql_query(f"SELECT * FROM {table}", conn)
-                df.to_csv(f"{path}_{table}.csv", index=False)
-            
             user_actions_df = pd.read_sql_query("SELECT * FROM user_actions", conn)
             user_actions_df.to_csv(f"{path}_user_actions.csv", index=False)
+            
             QMessageBox.information(self, "Export Successful", "Data exported successfully to CSV.")
         except Exception as e:
             logging.error(f"Failed to export data to CSV: {e}")
@@ -1538,12 +1582,9 @@ class App(QMainWindow):
     def export_to_json(self, path):
         conn = self.get_db_connection()
         try:
-            for table in ['blacklist', 'goldlist', 'prequal', 'mag_glass']:
-                df = pd.read_sql_query(f"SELECT * FROM {table}", conn)
-                df.to_json(f"{path}_{table}.json", orient='records', lines=True)
-            
             user_actions_df = pd.read_sql_query("SELECT * FROM user_actions", conn)
             user_actions_df.to_json(f"{path}_user_actions.json", orient='records', lines=True)
+            
             QMessageBox.information(self, "Export Successful", "Data exported successfully to JSON.")
         except Exception as e:
             logging.error(f"Failed to export data to JSON: {e}")
@@ -1556,15 +1597,20 @@ class App(QMainWindow):
         selected_filter = self.filter_dropdown.currentText()
 
         if selected_make == "All" and selected_filter in ["All", "Prequals"]:
-            QMessageBox.warning(self, "Selection Required", "Please select a vehicle for Prequals")
             self.left_panel.clear()  # Optionally clear the prequals display if needed
             self.model_dropdown.setCurrentIndex(0)
             self.year_dropdown.setCurrentIndex(0)
+            logging.debug("Make is 'All' and Filter is 'All' or 'Prequals'. Exiting early.")
             return  # Early return to stop further processing
 
         if selected_make != "Select Make":
-            models = [item['Model'] for item in self.data['prequal'] if item['Make'] == selected_make]
-            unique_models = sorted(set(str(model) for model in models))
+            # Filter prequal data to only include entries with valid prequalification information
+            valid_prequal_data = [item for item in self.data['prequal'] if self.has_valid_prequal(item)]
+
+            # Ensure models are treated as strings
+            models = [str(item['Model']) for item in valid_prequal_data if item['Make'] == selected_make]
+            unique_models = sorted(set(models))
+
             self.model_dropdown.clear()
             self.model_dropdown.addItem("Select Model")
             self.model_dropdown.addItems(unique_models)
@@ -1606,7 +1652,10 @@ class App(QMainWindow):
         selected_model = self.model_dropdown.currentText().strip()
 
         if selected_make != "Select Make" and selected_model != "Select Model":
-            years = [str(item['Year']) for item in self.data['prequal'] if item['Make'] == selected_make and item['Model'] == selected_model]
+            # Filter prequal data to only include entries with valid prequalification information
+            valid_prequal_data = [item for item in self.data['prequal'] if self.has_valid_prequal(item)]
+
+            years = [str(item['Year']) for item in valid_prequal_data if item['Make'] == selected_make and item['Model'] == selected_model]
             unique_years = sorted(set(years))
             self.year_dropdown.clear()
             self.year_dropdown.addItem("Select Year")
@@ -1682,7 +1731,8 @@ class App(QMainWindow):
                     QMessageBox.warning(self, "Load Error", "No data was loaded from the files. Check the logs for more details.")
 
     def refresh_lists_thread(self):
-        threading.Thread(target=self.refresh_lists).start()
+        thread = threading.Thread(target=self.refresh_lists)
+        thread.start()
 
     def refresh_lists(self):
         self.log_action(self.current_user, "Clicked Refresh Lists button")
@@ -1750,7 +1800,10 @@ class App(QMainWindow):
         self.make_dropdown.addItem("Select Make")
         self.make_dropdown.addItem("All")
 
-        makes = sorted(set(item['Make'].strip() for item in self.data['prequal'] if item['Make'].strip() and item['Make'].strip().lower() != 'unknown'))
+        # Filter prequal data to only include entries with valid prequalification information
+        valid_prequal_data = [item for item in self.data['prequal'] if self.has_valid_prequal(item)]
+
+        makes = sorted(set(item['Make'].strip() for item in valid_prequal_data if item['Make'].strip() and item['Make'].strip().lower() != 'unknown'))
 
         if '' in makes:
             makes.remove('')
@@ -1763,6 +1816,10 @@ class App(QMainWindow):
         self.model_dropdown.addItem("Select Model")
         self.year_dropdown.clear()
         self.year_dropdown.addItem("Select Year")
+
+    def has_valid_prequal(self, item):
+        # Add your logic here to determine if the item has valid prequalification information
+        return item.get('Calibration Pre-Requisites') not in [None, 'N/A']
 
     def perform_search_thread(self):
         threading.Thread(target=self.perform_search).start()
@@ -1791,7 +1848,6 @@ class App(QMainWindow):
 
         # If 'All' or 'Prequals' is selected in the filter dropdown without a year selected, show warning and clear the left panel
         if selected_filter in ["All", "Prequals"] and selected_year == "Select Year":
-            QMessageBox.warning(self, "Selection Required", "Please select a year for All or Prequals")
             self.left_panel.clear()  # Optionally clear the prequals display if needed
             return  # Early return to stop further processing
 
@@ -1846,17 +1902,26 @@ class App(QMainWindow):
             self.display_mag_glass(selected_make)
 
     def handle_prequal_search(self, selected_make, selected_model, selected_year):
-        if selected_make == "All":  # If 'All' is selected for make, ignore make in the filtering
-            prequal_results = [item for item in self.data['prequal']
-                            if (selected_model == "Select Model" or item['Model'] == selected_model) and
-                                (selected_year == "Select Year" or str(item['Year']) == selected_year)]
-        else:
-            prequal_results = [item for item in self.data['prequal']
-                            if (item['Make'] == selected_make) and
-                                (selected_model == "Select Model" or item['Model'] == selected_model) and
-                                (selected_year == "Select Year" or str(item['Year']) == selected_year)]
-        
-        self.display_results(prequal_results, context='prequal')
+        # Dictionary to hold unique System Acronyms
+        unique_results = {}
+
+        # Convert selected_model to a string
+        selected_model_str = str(selected_model)
+
+        # Filtering data based on selections
+        filtered_results = [item for item in self.data['prequal']
+                            if (selected_make == "All" or item['Make'] == selected_make) and
+                            (selected_model == "Select Model" or str(item['Model']) == selected_model_str) and
+                            (selected_year == "Select Year" or str(item['Year']) == selected_year)]
+
+        # Populating the dictionary with unique entries based on System Acronym
+        for item in filtered_results:
+            system_acronym = item.get('Protech Generic System Name.1', 'N/A')
+            if system_acronym not in unique_results:
+                unique_results[system_acronym] = item  # Store the entire item for display
+
+        # Now, pass the unique items to be displayed
+        self.display_results(list(unique_results.values()), context='prequal')
 
     def display_mag_glass(self, selected_make):
         try:
