@@ -206,8 +206,11 @@ def initialize_db(db_path='data.db'):
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS mag_glass (
                 id INTEGER PRIMARY KEY,
-                folder_path TEXT,
-                data TEXT
+                genericSystemName TEXT,
+                adasModuleName TEXT,
+                carMake TEXT,
+                manufacturer TEXT,
+                autelOrBosch TEXT
             );
         ''')
         cursor.execute('''
@@ -305,11 +308,21 @@ def load_path_from_db(config_type, db_path='data.db'):
 def update_configuration(config_type, folder_path, data, db_path='data.db'):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-    data_json = json.dumps(data)
-    cursor.execute(f'''
-        INSERT INTO {config_type} (folder_path, data)
-        VALUES (?, ?)
-    ''', (folder_path, data_json))
+
+    if config_type == 'mag_glass':
+        # Assuming columns A, B, C, D, and E correspond to specific fields
+        cursor.executemany('''
+            INSERT INTO mag_glass (genericSystemName, adasModuleName, carMake, manufacturer, autelOrBosch)
+            VALUES (?, ?, ?, ?, ?)
+        ''', [(item['genericSystemName'], item['adasModuleName'], item['carMake'], item['manufacturer'], item['autelOrBosch']) for item in data])
+
+    else:
+        data_json = json.dumps(data)
+        cursor.execute(f'''
+            INSERT INTO {config_type} (folder_path, data)
+            VALUES (?, ?)
+        ''', (folder_path, data_json))
+
     conn.commit()
     conn.close()
 
@@ -369,13 +382,24 @@ def load_excel_data_to_db(excel_path, table_name, db_path='data.db', sheet_index
             expected_columns = ['genericSystemName', 'dtcCode', 'dtcDescription', 'dtcSys', 'carMake', 'comments']
             df = df[expected_columns]
 
+        # Clean up the DataFrame: replace NaNs with None and drop rows where all elements are NaN
         df = df.where(pd.notnull(df), None)
+        df.dropna(how='all', inplace=True)
 
+        # Convert necessary columns to strings (applicable for non-mag_glass tables)
         if table_name != 'mag_glass':
             int_columns = ['dtcCode']
             df[int_columns] = df[int_columns].astype(str)
 
-        # Save to database
+        # Save the DataFrame to the specified table in the SQLite database
+        conn = sqlite3.connect(db_path)
+        df.to_sql(table_name, conn, if_exists='replace', index=False)
+
+        # Verify data saved to the database
+        df_saved = pd.read_sql_query(f"SELECT * FROM {table_name}", conn)
+        logging.debug(f"Data saved to {table_name}: {df_saved}")
+
+        # Save the DataFrame to the specified table in the SQLite database
         conn = sqlite3.connect(db_path)
         df.to_sql(table_name, conn, if_exists='replace', index=False)
         conn.close()
@@ -390,17 +414,18 @@ def load_excel_data_to_db(excel_path, table_name, db_path='data.db', sheet_index
         return "\n".join(error_messages)
     return "Data loaded successfully"
 
-def load_last_sheet_data_to_db(excel_path, table_name, db_path='data.db', parent=None):
+def load_mag_glass_data_from_5th_sheet(excel_path, table_name='mag_glass', db_path='data.db'):
     error_messages = []
     try:
-        # Load the last sheet of the Excel file
-        xls = pd.ExcelFile(excel_path)
-        last_sheet_name = xls.sheet_names[-1]
-        df = pd.read_excel(xls, last_sheet_name)
-        logging.debug(f"Data loaded from the last sheet '{last_sheet_name}': {df.head()}")
+        # Load the 5th sheet of the Excel file (index starts from 0, so the 5th sheet is index 4)
+        df = pd.read_excel(excel_path, sheet_name=4)
+        logging.debug(f"Data loaded from the 5th sheet: {df.head()}")
 
+        # Clean up the DataFrame: replace NaNs with None and drop rows where all elements are NaN
         df = df.where(pd.notnull(df), None)
+        df.dropna(how='all', inplace=True)
 
+        # Save the DataFrame to the specified table in the SQLite database
         conn = sqlite3.connect(db_path)
         df.to_sql(table_name, conn, if_exists='replace', index=False)
         conn.close()
@@ -411,7 +436,7 @@ def load_last_sheet_data_to_db(excel_path, table_name, db_path='data.db', parent
         error_messages.append(error_message)
 
     if error_messages:
-        QMessageBox.critical(parent, "Errors Encountered", "\n".join(error_messages))
+        QMessageBox.critical(None, "Errors Encountered", "\n".join(error_messages))
         return "\n".join(error_messages)
     return "Data loaded successfully"
 
@@ -527,7 +552,7 @@ class App(QMainWindow):
 
         # Create theme dropdown
         self.theme_dropdown = QComboBox()
-        themes = ["Dark", "Light", "Red", "Blue", "Green", "Yellow", "Pink", "Purple", "Teal", "Cyan", "Orange", "RGB"]
+        themes = ["Dark", "Light", "Red", "Blue", "Green", "Yellow", "Pink", "Purple", "Teal", "Cyan", "Orange"]
         self.theme_dropdown.addItems(themes)
         self.theme_dropdown.currentIndexChanged.connect(self.apply_selected_theme)
         button_theme_layout.addWidget(self.theme_dropdown)
@@ -710,10 +735,12 @@ class App(QMainWindow):
             self.mag_glass_container.setVisible(True)
             self.left_panel_container.setVisible(False)
             self.right_panel_container.setVisible(False)
+            self.display_mag_glass(selected_make)  # Pass the selected make to the display_mag_glass method
         elif selected_filter in ["All", "Black/Gold/Mag"]:
             self.mag_glass_container.setVisible(True)
             self.left_panel_container.setVisible(selected_filter == "All" and selected_year != "Select Year")
             self.right_panel_container.setVisible(True)
+            self.display_mag_glass(selected_make)  # Pass the selected make to the display_mag_glass method
         else:
             self.mag_glass_container.setVisible(False)
 
@@ -1701,7 +1728,7 @@ class App(QMainWindow):
                             if result != "Failed to load data":
                                 data_loaded = True
                         elif config_type == 'mag_glass':
-                            result = load_last_sheet_data_to_db(filepath, config_type)
+                            result = load_mag_glass_data_from_5th_sheet(filepath, config_type)
                             if result != "Failed to load data":
                                 data_loaded = True
                         else:
@@ -1757,7 +1784,7 @@ class App(QMainWindow):
                             if result != "Failed to load data":
                                 data_loaded = True
                         elif config_type == 'mag_glass':
-                            result = load_last_sheet_data_to_db(filepath, config_type, db_path=self.db_path)
+                            result = load_mag_glass_data_from_5th_sheet(filepath, config_type, db_path=self.db_path)
                             if result != "Failed to load data":
                                 data_loaded = True
                         else:
@@ -1926,25 +1953,27 @@ class App(QMainWindow):
     def display_mag_glass(self, selected_make):
         try:
             conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-
+            
+            # Prepare the query based on the selected make
             if selected_make == "All":
                 query = """
                 SELECT "Generic System Name", "ADAS Module Name", "Car Make", "Manufacturer", "AUTEL or BOSCH"
                 FROM mag_glass
                 """
+                df = pd.read_sql_query(query, conn)
             else:
-                query = f"""
+                query = """
                 SELECT "Generic System Name", "ADAS Module Name", "Car Make", "Manufacturer", "AUTEL or BOSCH"
                 FROM mag_glass
-                WHERE "Car Make" = '{selected_make}'
+                WHERE "Car Make" = ?
                 """
-
-            df = pd.read_sql_query(query, conn)
+                df = pd.read_sql_query(query, conn, params=(selected_make,))
+            
+            # Display the data in the Mag Glass panel
             if not df.empty:
                 self.mag_glass_panel.setHtml(df.to_html(index=False, escape=False))
             else:
-                self.mag_glass_panel.setPlainText("No results found for Mag Glass.")
+                self.mag_glass_panel.setPlainText(f"No results found for Make: {selected_make}")
         except Exception as e:
             logging.error(f"Failed to execute query: {query}\nError: {e}")
             self.mag_glass_panel.setPlainText("An error occurred while fetching the data.")
