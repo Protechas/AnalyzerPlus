@@ -1869,8 +1869,6 @@ class App(QMainWindow):
                     self.check_data_loaded()  # Ensure the dropdowns are enabled if data is loaded
                     QMessageBox.information(self, "Update Successful", "Data loaded successfully.")
                     self.status_bar.showMessage(f"Data updated from: {folder_path}")
-                else:
-                    QMessageBox.warning(self, "Load Error", "No data was loaded from the files. Check the logs for more details.")
 
     def refresh_lists_thread(self):
         thread = threading.Thread(target=self.refresh_lists)
@@ -1929,8 +1927,6 @@ class App(QMainWindow):
                     self.check_data_loaded()  # Ensure the dropdowns are enabled if data is loaded
                     QMessageBox.information(self, "Update Successful", f"Data refreshed successfully from: {folder_path}")
                     self.status_bar.showMessage(f"Data refreshed from: {folder_path}")
-                else:
-                    QMessageBox.warning(self, "Load Error", f"No data was loaded from the files for {config_type}. Check the logs for more details.")
 
     def load_configurations(self):
         logging.debug("Loading configurations...")
