@@ -182,6 +182,15 @@ def initialize_db(db_path='data.db'):
             );
         ''')
         cursor.execute('''
+            CREATE TABLE IF NOT EXISTS carsys (
+                id INTEGER PRIMARY KEY,
+                genericSystemName TEXT,
+                dtcSys TEXT,
+                carMake TEXT,
+                comments TEXT
+            );
+        ''')
+        cursor.execute('''
             CREATE TABLE IF NOT EXISTS blacklist (
                 id INTEGER PRIMARY KEY,
                 dtcCode TEXT,
@@ -414,6 +423,72 @@ def load_excel_data_to_db(excel_path, table_name, db_path='data.db', sheet_index
         return "\n".join(error_messages)
     return "Data loaded successfully"
 
+def load_carsys_data_to_db(excel_path, table_name='carsys', db_path='data.db', parent=None):
+    error_messages = []
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        
+        # Drop the table if it already exists
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
+        conn.commit()
+
+        # Load the first sheet from the Excel file (assuming column headers are in the first row)
+        df = pd.read_excel(excel_path, sheet_name=0, usecols="A:D", header=0)
+        logging.debug(f"Data loaded from sheet index '0': {df.head()}")
+
+        # Clean column names by stripping any extra whitespace
+        df.columns = df.columns.str.strip()
+
+        # Expected columns
+        expected_columns = ['Generic System Name', 'DTCsys', 'CarMake', 'Comments']
+
+        # Validate that the necessary columns exist in the DataFrame
+        if not all(col in df.columns for col in expected_columns):
+            missing_cols = [col for col in expected_columns if col not in df.columns]
+            raise ValueError(f"Missing expected columns in the Excel file: {', '.join(missing_cols)}")
+
+        # Rename the columns to match the database schema
+        df = df.rename(columns={
+            'Generic System Name': 'genericSystemName',
+            'DTCsys': 'dtcSys',
+            'CarMake': 'carMake',
+            'Comments': 'comments'
+        })
+
+        # Select only the necessary columns (A, B, C, D)
+        df = df[['genericSystemName', 'dtcSys', 'carMake', 'comments']]
+
+        # Convert necessary columns to strings (or other expected types)
+        df['genericSystemName'] = df['genericSystemName'].astype(str)
+        df['dtcSys'] = df['dtcSys'].astype(str)
+        df['carMake'] = df['carMake'].astype(str)
+        df['comments'] = df['comments'].astype(str)
+
+        # Clean up the DataFrame: replace NaNs with None and drop rows where all elements are NaN
+        df = df.where(pd.notnull(df), None)
+        df.dropna(how='all', inplace=True)
+
+        # Save the DataFrame to the specified table in the SQLite database
+        df.to_sql(table_name, conn, if_exists='replace', index=False)
+
+        # Verify data saved to the database
+        df_saved = pd.read_sql_query(f"SELECT * FROM {table_name}", conn)
+        logging.debug(f"Data saved to {table_name}: {df_saved.head()}")
+        conn.close()
+        return "Data loaded successfully"
+
+    except Exception as e:
+        error_message = f"Failed to load data from {excel_path} into {table_name}: {str(e)}"
+        logging.error(error_message)
+        error_messages.append(error_message)
+
+    if error_messages:
+        QMessageBox.critical(parent, "Errors Encountered", "\n".join(error_messages))
+        return "\n.join(error_messages)"
+
+    return "Data loaded successfully"
+
 def load_mag_glass_data_from_5th_sheet(excel_path, table_name='mag_glass', db_path='data.db'):
     error_messages = []
     try:
@@ -613,7 +688,7 @@ class App(QMainWindow):
         main_layout.addWidget(self.search_bar)
 
         self.filter_dropdown = QComboBox()
-        self.filter_dropdown.addItems(["Select List", "Blacklist", "Goldlist", "Prequals", "Mag Glass", "Gold and Black", "Black/Gold/Mag", "All"])
+        self.filter_dropdown.addItems(["Select List", "Blacklist", "Goldlist", "Prequals", "Mag Glass", "Gold and Black", "Black/Gold/Mag", "CarSys", "All"])
         self.filter_dropdown.currentIndexChanged.connect(self.filter_changed)  # Connect this to a new method
         main_layout.addWidget(self.filter_dropdown)
 
@@ -683,6 +758,24 @@ class App(QMainWindow):
         self.splitter.addWidget(self.mag_glass_container)
         self.mag_glass_container.setVisible(False)
 
+        self.carsys_container = QWidget()
+        self.carsys_layout = QVBoxLayout(self.carsys_container)
+
+        # Add label and pop out button for CarSys panel
+        carsys_header_layout = QHBoxLayout()
+        self.carsys_label = QLabel("CarSys")
+        carsys_header_layout.addWidget(self.carsys_label)
+        self.carsys_pop_out_button = QPushButton("PO")
+        self.carsys_pop_out_button.setFixedSize(40, 30)
+        self.carsys_pop_out_button.clicked.connect(lambda: self.pop_out_panel("CarSys", self.carsys_panel.toHtml()))
+        carsys_header_layout.addWidget(self.carsys_pop_out_button)
+        self.carsys_layout.addLayout(carsys_header_layout)
+
+        self.carsys_panel = QTextBrowser()
+        self.carsys_layout.addWidget(self.carsys_panel)
+        self.splitter.addWidget(self.carsys_container)
+        self.carsys_container.setVisible(False)
+
         main_layout.addWidget(self.splitter)
 
         self.add_hide_show_buttons(main_layout)  # Add hide/show buttons
@@ -730,8 +823,13 @@ class App(QMainWindow):
             self.filter_dropdown.setCurrentIndex(0)  # Reset the filter dropdown to the default value
             self.left_panel.clear()  # Optionally clear the left panel
             return  # Early return to stop further processing
-
-        if selected_filter == "Mag Glass":
+        
+        if selected_filter == "CarSys":
+            self.carsys_container.setVisible(True)
+            self.left_panel_container.setVisible(False)
+            self.right_panel_container.setVisible(False)
+            self.display_carsys_data(selected_make)
+        elif selected_filter == "Mag Glass":
             self.mag_glass_container.setVisible(True)
             self.left_panel_container.setVisible(False)
             self.right_panel_container.setVisible(False)
@@ -743,7 +841,7 @@ class App(QMainWindow):
             self.display_mag_glass(selected_make)  # Pass the selected make to the display_mag_glass method
         else:
             self.mag_glass_container.setVisible(False)
-
+            self.carsys_container.setVisible(False)
         self.perform_search()
 
     def add_hide_show_buttons(self, layout):
@@ -762,6 +860,11 @@ class App(QMainWindow):
         self.mag_glass_hide_show_button.setFixedSize(120, 30)
         self.mag_glass_hide_show_button.clicked.connect(self.toggle_mag_glass_panel)
         button_layout.addWidget(self.mag_glass_hide_show_button)
+
+        self.carsys_hide_show_button = QPushButton("Hide CarSys")
+        self.carsys_hide_show_button.setFixedSize(120, 30)
+        self.carsys_hide_show_button.clicked.connect(self.toggle_carsys_panel)
+        button_layout.addWidget(self.carsys_hide_show_button)
 
         layout.addLayout(button_layout)
 
@@ -788,6 +891,14 @@ class App(QMainWindow):
         else:
             self.mag_glass_container.show()
             self.mag_glass_hide_show_button.setText("Show Mag Glass")
+
+    def toggle_carsys_panel(self):
+        if self.carsys_container.isVisible():
+            self.carsys_container.hide()
+            self.carsys_hide_show_button.setText("Hide CarSys")
+        else:
+            self.carsys_container.show()
+            self.carsys_hide_show_button.setText("Show CarSys")
 
     def set_refresh_button_style(self):
         self.refresh_button.setStyleSheet("""
@@ -1663,7 +1774,7 @@ class App(QMainWindow):
             choice, ok = QInputDialog.getItem(self, "Admin Actions", "Select action:", ["Update Paths", "Clear Data"], 0, False)
             if ok and choice == "Clear Data":
                 # Added 'mag_glass' to the list of options
-                config_type, ok = QInputDialog.getItem(self, "Clear Data", "Select configuration to clear or 'All' to reset database:", ["blacklist", "goldlist", "prequal", "mag_glass", "All"], 0, False)
+                config_type, ok = QInputDialog.getItem(self, "Clear Data", "Select configuration to clear or 'All' to reset database:", ["blacklist", "goldlist", "prequal", "mag_glass", "All", "CarSys"], 0, False)
                 if ok:
                     if config_type == "All":
                         self.clear_data()
@@ -1707,7 +1818,7 @@ class App(QMainWindow):
         threading.Thread(target=self.manage_paths).start()
 
     def manage_paths(self):
-        config_type, ok = QInputDialog.getItem(self, "Select Config Type", "Choose the configuration to update:", ["blacklist", "goldlist", "prequal", "mag_glass"], 0, False)
+        config_type, ok = QInputDialog.getItem(self, "Select Config Type", "Choose the configuration to update:", ["blacklist", "goldlist", "prequal", "mag_glass", "CarSys"], 0, False)
         if ok:
             folder_path = QFileDialog.getExistingDirectory(self, "Select Directory")
             if folder_path:
@@ -1731,6 +1842,10 @@ class App(QMainWindow):
                             result = load_mag_glass_data_from_5th_sheet(filepath, config_type)
                             if result != "Failed to load data":
                                 data_loaded = True
+                        elif config_type == 'CarSys':
+                            result = load_carsys_data_to_db(filepath, table_name=config_type, db_path=self.db_path)
+                            if result != "Data loaded successfully":
+                                data_loaded = False  # Handle errors more specifically here
                         else:
                             df = pd.read_excel(filepath)
                             if df.empty:
@@ -1764,7 +1879,7 @@ class App(QMainWindow):
     def refresh_lists(self):
         self.log_action(self.current_user, "Clicked Refresh Lists button")
         # Include 'mag_glass' in the list
-        for config_type in ['blacklist', 'goldlist', 'prequal', 'mag_glass']:
+        for config_type in ['blacklist', 'goldlist', 'prequal', 'mag_glass', 'CarSys']:
             folder_path = load_path_from_db(config_type, self.db_path)
             if folder_path:
                 files = self.get_valid_excel_files(folder_path)
@@ -1787,6 +1902,11 @@ class App(QMainWindow):
                             result = load_mag_glass_data_from_5th_sheet(filepath, config_type, db_path=self.db_path)
                             if result != "Failed to load data":
                                 data_loaded = True
+                        elif config_type == 'CarSys':
+                            result = load_excel_data_to_db(filepath, config_type, db_path=self.db_path, sheet_index=0)
+                            if result != "Failed to load data":
+                                data_loaded = False
+
                         else:
                             df = pd.read_excel(filepath)
                             if df.empty:
@@ -1877,6 +1997,11 @@ class App(QMainWindow):
         if selected_filter in ["All", "Prequals"] and selected_year == "Select Year":
             self.left_panel.clear()  # Optionally clear the prequals display if needed
             return  # Early return to stop further processing
+        
+        # Handle the CarSys search
+        if selected_filter == "CarSys":
+            self.search_carsys_dtc(dtc_code)
+            self.display_carsys_data(selected_make) 
 
         # Log the search
         self.log_action(self.current_user, f"Performed search with DTC: {dtc_code}, Filter: {selected_filter}, Make: {selected_make}, Model: {selected_model}, Year: {selected_year}")
@@ -1884,6 +2009,10 @@ class App(QMainWindow):
         # Handle the "Select List" as a do-nothing case
         if selected_filter == "Select List":
             return
+        
+        # Update CarSys panel if the search bar is not empty
+        if dtc_code:
+            self.search_carsys_dtc(dtc_code)
 
         # Show or hide panels based on the selected filter and conditions
         self.update_panel_visibility(selected_filter, selected_make)
@@ -1950,6 +2079,42 @@ class App(QMainWindow):
         # Now, pass the unique items to be displayed
         self.display_results(list(unique_results.values()), context='prequal')
 
+    def display_carsys_data(self, selected_make):
+        try:
+            conn = sqlite3.connect(self.db_path)
+            
+            # If no make is selected, display all results
+            if selected_make == "Select Make" or selected_make == "All":
+                query = """
+                SELECT genericSystemName, dtcSys, carMake, comments
+                FROM carsys
+                """
+                df = pd.read_sql_query(query, conn)
+            else:
+                # If a make is selected, filter the results by the selected make
+                query = """
+                SELECT genericSystemName, dtcSys, carMake, comments
+                FROM carsys
+                WHERE carMake = ?
+                """
+                df = pd.read_sql_query(query, conn, params=(selected_make,))
+            
+            # Replace NaN values with empty strings
+            df.fillna("", inplace=True)
+            
+            # Display the results in the CarSys panel
+            if df.empty:
+                self.carsys_panel.setPlainText("No results found.")
+            else:
+                self.carsys_panel.setHtml(df.to_html(index=False, escape=False))
+        
+        except Exception as e:
+            logging.error(f"Failed to display CarSys data: {e}")
+            self.carsys_panel.setPlainText("An error occurred while fetching the CarSys data.")
+        
+        finally:
+            conn.close()
+
     def display_mag_glass(self, selected_make):
         try:
             conn = sqlite3.connect(self.db_path)
@@ -1980,6 +2145,54 @@ class App(QMainWindow):
         finally:
             if conn:
                 conn.close()
+
+    def search_carsys_dtc(self, dtc_code):
+        conn = self.get_db_connection()
+
+        # Modify query to filter by DTCsys and optionally by carMake
+        if dtc_code:
+            if self.make_dropdown.currentText() not in ["Select Make", "All"]:
+                query = f"""
+                SELECT genericSystemName, dtcSys, carMake, comments
+                FROM carsys
+                WHERE dtcSys LIKE '%{dtc_code}%' AND carMake = ?
+                """
+                params = (self.make_dropdown.currentText(),)
+            else:
+                query = f"""
+                SELECT genericSystemName, dtcSys, carMake, comments
+                FROM carsys
+                WHERE dtcSys LIKE '%{dtc_code}%'
+                """
+                params = None
+        else:
+            # If no DTC code is entered, show all results
+            query = """
+            SELECT genericSystemName, dtcSys, carMake, comments
+            FROM carsys
+            """
+            params = None
+
+        try:
+            if params:
+                df = pd.read_sql_query(query, conn, params=params)
+            else:
+                df = pd.read_sql_query(query, conn)
+            
+            # Replace NaN values with empty strings
+            df.fillna("", inplace=True)
+
+            if df.empty:
+                self.carsys_panel.setPlainText("No results found for the given criteria.")
+            else:
+                self.carsys_panel.setHtml(df.to_html(index=False, escape=False))
+        
+        except Exception as e:
+            logging.error(f"Failed to execute CarSys search query: {query}\nError: {e}")
+            self.carsys_panel.setPlainText("An error occurred while fetching the CarSys data.")
+        
+        finally:
+            conn.close()
 
     def search_mag_glass(self, selected_make):
         conn = self.get_db_connection()
