@@ -1793,11 +1793,21 @@ class App(QMainWindow):
             # Filter prequal data to only include entries with valid prequalification information
             valid_prequal_data = [item for item in self.data['prequal'] if self.has_valid_prequal(item)]
 
-            years = [str(item['Year']) for item in valid_prequal_data if item['Make'] == selected_make and item['Model'] == selected_model]
+            # Ensure the year values are whole numbers (integers) and remove any non-integer values
+            years = []
+            for item in valid_prequal_data:
+                try:
+                    year = int(float(item['Year']))  # Convert the year to an integer
+                    years.append(year)
+                except (ValueError, TypeError):
+                    continue
+
+            # Remove duplicates and sort the years
             unique_years = sorted(set(years))
+
             self.year_dropdown.clear()
             self.year_dropdown.addItem("Select Year")
-            self.year_dropdown.addItems(unique_years)
+            self.year_dropdown.addItems([str(year) for year in unique_years])
         else:
             self.year_dropdown.clear()
             self.year_dropdown.addItem("Select Year")
@@ -1876,10 +1886,17 @@ class App(QMainWindow):
 
     def refresh_lists(self):
         self.log_action(self.current_user, "Clicked Refresh Lists button")
-        # Include 'mag_glass' in the list
+        
+        # Include 'mag_glass' and 'CarSys' in the list
         for config_type in ['blacklist', 'goldlist', 'prequal', 'mag_glass', 'CarSys']:
             folder_path = load_path_from_db(config_type, self.db_path)
+            
             if folder_path:
+                # First, clear existing data for the config_type
+                self.clear_data(config_type)
+                logging.info(f"Cleared existing data for {config_type}")
+
+                # Then get the valid files from the folder path
                 files = self.get_valid_excel_files(folder_path)
                 if not files:
                     QMessageBox.warning(self, "Load Error", f"No valid Excel files found in the directory for {config_type}.")
@@ -1890,21 +1907,21 @@ class App(QMainWindow):
                 self.progress_bar.setMaximum(len(files))
                 self.progress_bar.setValue(0)
 
+                # Load data from each file
                 for i, (filename, filepath) in enumerate(files.items()):
                     try:
                         if config_type in ['blacklist', 'goldlist']:
                             result = load_excel_data_to_db(filepath, config_type, db_path=self.db_path, sheet_index=1)
-                            if result != "Failed to load data":
+                            if result == "Data loaded successfully":
                                 data_loaded = True
                         elif config_type == 'mag_glass':
                             result = load_mag_glass_data_from_5th_sheet(filepath, config_type, db_path=self.db_path)
-                            if result != "Failed to load data":
+                            if result == "Data loaded successfully":
                                 data_loaded = True
                         elif config_type == 'CarSys':
-                            result = load_excel_data_to_db(filepath, config_type, db_path=self.db_path, sheet_index=0)
-                            if result != "Failed to load data":
-                                data_loaded = False
-
+                            result = load_carsys_data_to_db(filepath, table_name=config_type, db_path=self.db_path)
+                            if result == "Data loaded successfully":
+                                data_loaded = True
                         else:
                             df = pd.read_excel(filepath)
                             if df.empty:
@@ -1927,6 +1944,8 @@ class App(QMainWindow):
                     self.check_data_loaded()  # Ensure the dropdowns are enabled if data is loaded
                     QMessageBox.information(self, "Update Successful", f"Data refreshed successfully from: {folder_path}")
                     self.status_bar.showMessage(f"Data refreshed from: {folder_path}")
+            else:
+                logging.warning(f"No saved path found for {config_type}")
 
     def load_configurations(self):
         logging.debug("Loading configurations...")
