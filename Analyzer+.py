@@ -2012,11 +2012,12 @@ class App(QMainWindow):
         if selected_filter in ["All", "Prequals"] and selected_year == "Select Year":
             self.left_panel.clear()  # Optionally clear the prequals display if needed
             return  # Early return to stop further processing
-        
+
         # Handle the CarSys search
         if selected_filter == "CarSys":
             self.search_carsys_dtc(dtc_code)
             self.display_carsys_data(selected_make) 
+            return  # Stop further processing for CarSys
 
         # Log the search
         self.log_action(self.current_user, f"Performed search with DTC: {dtc_code}, Filter: {selected_filter}, Make: {selected_make}, Model: {selected_model}, Year: {selected_year}")
@@ -2025,6 +2026,27 @@ class App(QMainWindow):
         if selected_filter == "Select List":
             return
         
+        # Handle prequal search based on make, model, and year
+        if selected_filter == "Prequals" and selected_make != "Select Make" and selected_model != "Select Model" and selected_year != "Select Year":
+            try:
+                selected_year = int(selected_year)  # Convert selected year to integer
+            except ValueError:
+                self.left_panel.clear()  # Clear the display if year is invalid
+                return
+
+            # Filter prequal data based on the selected make, model, and year
+            filtered_prequals = [
+                item for item in self.data['prequal']
+                if item['Make'] == selected_make and str(item['Model']) == str(selected_model) and int(float(item['Year'])) == selected_year
+            ]
+
+            # Display the filtered prequal data
+            if filtered_prequals:
+                self.display_results(filtered_prequals, context='prequal')
+            else:
+                self.left_panel.setPlainText("No prequal data found for the selected criteria.")
+            return  # Stop further processing for Prequals
+
         # Update CarSys panel if the search bar is not empty
         if dtc_code:
             self.search_carsys_dtc(dtc_code)
@@ -2341,6 +2363,11 @@ class App(QMainWindow):
             parts_code = result.get('Parts Code Table Value', 'N/A')
             calibration_prerequisites = result.get('Calibration Pre-Requisites', 'N/A')
 
+            # Ensure the year is displayed as a whole number
+            year = result.get('Year', 'N/A')
+            if isinstance(year, float):
+                year = str(int(year))  # Convert float year to an integer string
+
             if context == 'dtc':
                 display_text += f"""
                 <b>Source:</b> {result['Source']}<br>
@@ -2356,13 +2383,14 @@ class App(QMainWindow):
                 display_text += f"""
                 <b>Make:</b> {result['Make']}<br>
                 <b>Model:</b> {result['Model']}<br>
-                <b>Year:</b> {result['Year']}<br>
+                <b>Year:</b> {year}<br>  <!-- Display year as a whole number -->
                 <b>System Acronym:</b> {system_acronym}<br>
                 <b>Parts Code Table Value:</b> {parts_code}<br>
                 <b>Calibration Type:</b> {calibration_type}<br>
                 <b>Service Information:</b> <a href='{link}'>Click Here</a><br><br>
                 <b>Pre-Quals:</b> {calibration_prerequisites}<br><br>
                 """
+
         self.left_panel.setHtml(display_text)
         self.left_panel.setOpenExternalLinks(True)
 
