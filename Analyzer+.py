@@ -814,6 +814,13 @@ class App(QMainWindow):
         selected_make = self.make_dropdown.currentText()
         selected_year = self.year_dropdown.currentText()
 
+        # Hide all containers initially
+        self.left_panel_container.setVisible(False)
+        self.right_panel_container.setVisible(False)
+        self.carsys_container.setVisible(False)
+        self.mag_glass_container.setVisible(False)
+
+        # Handle "All" or "Prequals" with no selected year
         if selected_make == "All":
             self.model_dropdown.setCurrentIndex(0)
             self.year_dropdown.setCurrentIndex(0)
@@ -823,25 +830,25 @@ class App(QMainWindow):
             self.filter_dropdown.setCurrentIndex(0)  # Reset the filter dropdown to the default value
             self.left_panel.clear()  # Optionally clear the left panel
             return  # Early return to stop further processing
-        
+
+        # Show panels based on the selected filter
         if selected_filter == "CarSys":
             self.carsys_container.setVisible(True)
-            self.left_panel_container.setVisible(False)
-            self.right_panel_container.setVisible(False)
             self.display_carsys_data(selected_make)
         elif selected_filter == "Mag Glass":
             self.mag_glass_container.setVisible(True)
-            self.left_panel_container.setVisible(False)
-            self.right_panel_container.setVisible(False)
             self.display_mag_glass(selected_make)  # Pass the selected make to the display_mag_glass method
         elif selected_filter in ["All", "Black/Gold/Mag"]:
             self.mag_glass_container.setVisible(True)
             self.left_panel_container.setVisible(selected_filter == "All" and selected_year != "Select Year")
             self.right_panel_container.setVisible(True)
             self.display_mag_glass(selected_make)  # Pass the selected make to the display_mag_glass method
-        else:
-            self.mag_glass_container.setVisible(False)
-            self.carsys_container.setVisible(False)
+        elif selected_filter == "Prequals":
+            self.left_panel_container.setVisible(True)  # Show left panel for Prequals
+        elif selected_filter == "Blacklist" or selected_filter == "Goldlist":
+            self.right_panel_container.setVisible(True)  # Show right panel for Blacklist/Goldlist
+
+        # Perform the search to update the view
         self.perform_search()
 
     def add_hide_show_buttons(self, layout):
