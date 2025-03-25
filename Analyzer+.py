@@ -1430,7 +1430,7 @@ class App(QMainWindow):
         main_layout.addWidget(self.search_bar)
 
         self.filter_dropdown = QComboBox()
-        self.filter_dropdown.addItems(["Select List", "Blacklist", "Goldlist", "Prequals", "Mag Glass", "Gold and Black", "Black/Gold/Mag", "All"])
+        self.filter_dropdown.addItems(["Select List", "Blacklist", "Goldlist", "Prequals", "Mag Glass", "CarSys", "Gold and Black", "Black/Gold/Mag", "All"])
         self.filter_dropdown.currentIndexChanged.connect(self.filter_changed)  # Connect this to a new method
         main_layout.addWidget(self.filter_dropdown)
 
@@ -1796,24 +1796,24 @@ class App(QMainWindow):
         # layout.addSpacing(-10)  # This was causing the buttons to overlap with the transparency slider
         
         button_layout = QHBoxLayout()
-        # Set initial button text to "Hide" since panels are visible by default
-        self.left_hide_show_button = QPushButton("Hide Prequals")
+        # Set initial button text to "Show" since panels are hidden by default
+        self.left_hide_show_button = QPushButton("Show Prequals")
         self.left_hide_show_button.setFixedSize(120, 30)
         self.left_hide_show_button.clicked.connect(self.toggle_left_panel)
         button_layout.addWidget(self.left_hide_show_button)
 
-        self.right_hide_show_button = QPushButton("Hide Gold and Black")
+        self.right_hide_show_button = QPushButton("Show Gold and Black")
         self.right_hide_show_button.setFixedSize(160, 30)
         self.right_hide_show_button.clicked.connect(self.toggle_right_panel)
         button_layout.addWidget(self.right_hide_show_button)
 
-        self.mag_glass_hide_show_button = QPushButton("Hide Mag Glass")
+        self.mag_glass_hide_show_button = QPushButton("Show Mag Glass")
         self.mag_glass_hide_show_button.setFixedSize(120, 30)
         self.mag_glass_hide_show_button.clicked.connect(self.toggle_mag_glass_panel)
         button_layout.addWidget(self.mag_glass_hide_show_button)
 
         # Add CarSys hide/show button
-        self.carsys_hide_show_button = QPushButton("Hide CarSys")
+        self.carsys_hide_show_button = QPushButton("Show CarSys")
         self.carsys_hide_show_button.setFixedSize(120, 30)
         self.carsys_hide_show_button.clicked.connect(self.toggle_carsys_panel)
         button_layout.addWidget(self.carsys_hide_show_button)
@@ -1823,11 +1823,11 @@ class App(QMainWindow):
         # Add some spacing after the buttons to ensure they don't overlap with transparency controls
         layout.addSpacing(10)
         
-        # Ensure all panels are visible at startup
-        self.left_panel_container.setVisible(True)
-        self.right_panel_container.setVisible(True)
-        self.mag_glass_container.setVisible(True)
-        self.carsys_container.setVisible(True)
+        # Ensure all panels are hidden at startup
+        self.left_panel_container.setVisible(False)
+        self.right_panel_container.setVisible(False)
+        self.mag_glass_container.setVisible(False)
+        self.carsys_container.setVisible(False)
 
     def toggle_left_panel(self):
         if self.left_panel_container.isVisible():
@@ -1967,8 +1967,14 @@ class App(QMainWindow):
 
     def update_black_and_gold_display(self):
         selected_make = self.make_dropdown.currentText().strip()
+        selected_filter = self.filter_dropdown.currentText().strip()
+        
         if selected_make and selected_make != "Select Make":
-            self.display_gold_and_black(selected_make)
+            # Pass the current filter or use Gold and Black as default
+            if selected_filter in ["Goldlist", "Blacklist"]:
+                self.display_gold_and_black(selected_make, selected_filter)
+            else:
+                self.display_gold_and_black(selected_make, "Gold and Black")
         else:
             self.right_panel.clear()
 
@@ -4122,7 +4128,7 @@ class App(QMainWindow):
             if dtc_code:
                 self.search_dtc_codes(dtc_code, selected_filter if selected_filter in ["Blacklist", "Goldlist"] else "Gold and Black", selected_make)
             else:
-                self.display_gold_and_black(selected_make)
+                self.display_gold_and_black(selected_make, selected_filter)
                 
         if mag_glass_visible:
             # Show Mag Glass content
@@ -4161,14 +4167,14 @@ class App(QMainWindow):
             if dtc_code:
                 self.search_dtc_codes(dtc_code, "Gold and Black", selected_make)  # This will depend on DTC input
             else:
-                self.display_gold_and_black(selected_make)  # Display gold and black lists based on selected make
+                self.display_gold_and_black(selected_make, "Gold and Black")  # Display gold and black lists based on selected make
             self.display_mag_glass(selected_make)  # Display mag glass data
 
         elif selected_filter == "Prequals":
             self.handle_prequal_search(selected_make, selected_model, selected_year)
 
         elif selected_filter == "Black/Gold/Mag":
-            self.display_gold_and_black(selected_make)  # Display gold and black lists based on selected make
+            self.display_gold_and_black(selected_make, "Gold and Black")  # Display gold and black lists based on selected make
             self.display_mag_glass(selected_make)  # Display mag glass data
 
         elif selected_filter in ["Gold and Black", "Blacklist", "Goldlist"]:
@@ -4391,23 +4397,46 @@ class App(QMainWindow):
         else:
             self.right_panel.setPlainText("No DTC code results found.")
 
-    def display_gold_and_black(self, selected_make):
+    def display_gold_and_black(self, selected_make, filter_type="Gold and Black"):
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
-            if selected_make == "All":
-                query = """
-                SELECT 'blacklist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments FROM blacklist
-                UNION ALL
-                SELECT 'goldlist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments FROM goldlist
-                """
-            else:
-                query = f"""
-                SELECT 'blacklist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments FROM blacklist WHERE carMake = '{selected_make}'
-                UNION ALL
-                SELECT 'goldlist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments FROM goldlist WHERE carMake = '{selected_make}'
-                """
+            # Determine which lists to include based on filter_type
+            if filter_type == "Gold and Black" or filter_type == "All" or filter_type == "Black/Gold/Mag":
+                # Show both lists
+                if selected_make == "All":
+                    query = """
+                    SELECT 'blacklist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments FROM blacklist
+                    UNION ALL
+                    SELECT 'goldlist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments FROM goldlist
+                    """
+                else:
+                    query = f"""
+                    SELECT 'blacklist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments FROM blacklist WHERE carMake = '{selected_make}'
+                    UNION ALL
+                    SELECT 'goldlist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments FROM goldlist WHERE carMake = '{selected_make}'
+                    """
+            elif filter_type == "Blacklist":
+                # Show only blacklist
+                if selected_make == "All":
+                    query = """
+                    SELECT 'blacklist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments FROM blacklist
+                    """
+                else:
+                    query = f"""
+                    SELECT 'blacklist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments FROM blacklist WHERE carMake = '{selected_make}'
+                    """
+            elif filter_type == "Goldlist":
+                # Show only goldlist
+                if selected_make == "All":
+                    query = """
+                    SELECT 'goldlist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments FROM goldlist
+                    """
+                else:
+                    query = f"""
+                    SELECT 'goldlist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments FROM goldlist WHERE carMake = '{selected_make}'
+                    """
             
             df = pd.read_sql_query(query, conn)
             if not df.empty:
@@ -4420,11 +4449,6 @@ class App(QMainWindow):
         finally:
             if conn:
                 conn.close()
-
-        if not df.empty:
-            self.right_panel.setHtml(df.to_html(index=False, escape=False))
-        else:
-            self.right_panel.setPlainText("No DTC code results found.")
 
     def display_results(self, results, context='prequal'):
         display_text = ""
