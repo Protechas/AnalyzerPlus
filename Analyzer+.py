@@ -1636,6 +1636,9 @@ class App(QMainWindow):
         selected_year = self.year_dropdown.currentText()
         selected_filter = self.filter_dropdown.currentText()
         
+        # Store the current make selection before updating
+        current_make = self.make_dropdown.currentText()
+        
         # If a year is selected, update the make dropdown to show only makes from that year
         if selected_year != "Select Year":
             try:
@@ -1669,15 +1672,22 @@ class App(QMainWindow):
                 self.make_dropdown.addItem("All")
                 self.make_dropdown.addItems(makes)
                 
+                # Restore previous make selection if it exists for the new year
+                if current_make in makes:
+                    index = self.make_dropdown.findText(current_make)
+                    if index != -1:
+                        self.make_dropdown.setCurrentIndex(index)
+                        logging.debug(f"Maintained previous make selection: {current_make}")
+                
                 # Reset model dropdown
                 self.model_dropdown.clear()
                 self.model_dropdown.addItem("Select Model")
                 
                 logging.debug(f"Updated make dropdown with {len(makes)} makes for year {selected_year}")
                 
-                # If we already have a make selected (e.g. after changing year), update the models
-                current_make = self.make_dropdown.currentText()
-                if current_make not in ["Select Make", "All"]:
+                # If we have a make selected (either preserved or default), update the models
+                updated_make = self.make_dropdown.currentText()
+                if updated_make not in ["Select Make", "All"]:
                     self.update_model_dropdown()
             except (ValueError, TypeError) as e:
                 logging.error(f"Error updating makes for year {selected_year}: {e}")
