@@ -4471,6 +4471,7 @@ class App(QMainWindow):
                 continue  # Skip this result
 
             calibration_type = result.get('Calibration Type', 'N/A')
+            og_calibration_type = result.get('OG Calibration Type', 'N/A')
 
             # Handle link safely
             link = result.get('Service Information Hyperlink', '#')
@@ -4507,6 +4508,7 @@ class App(QMainWindow):
                 <b>System Acronym:</b> {system_acronym}<br>
                 <b>Parts Code Table Value:</b> {parts_code}<br>
                 <b>Calibration Type:</b> {calibration_type}<br>
+                <b>OG Calibration Type:</b> {og_calibration_type}<br>
                 <b>Service Information:</b> <a href='{link}'>Click Here</a><br><br>
                 <b>Pre-Quals:</b> {calibration_prerequisites}<br><br>
                 """
