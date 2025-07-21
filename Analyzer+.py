@@ -2495,6 +2495,7 @@ class ModernAnalyzerApp(ModernMainWindow):
                 logging.error(f"Error updating makes for year {selected_year}: {e}")
         if selected_filter in ["Prequals", "Gold and Black", "Blacklist", "Goldlist", "Mag Glass", "All"]:
             self.perform_search()
+        self.update_visible_panels()
 
     def update_model_dropdown(self):
         selected_year = self.year_dropdown.currentText().strip()
@@ -2502,6 +2503,7 @@ class ModernAnalyzerApp(ModernMainWindow):
         self.populate_models(selected_year, selected_make)
         import logging
         logging.debug(f"Updated model dropdown for Year: {selected_year}, Make: {selected_make}")
+        self.update_visible_panels()
 
     def handle_model_change(self, index):
         selected_model = self.model_dropdown.currentText().strip()
@@ -4401,6 +4403,72 @@ class ModernAnalyzerApp(ModernMainWindow):
             else:
                 print(f"[DEBUG] Calling display_carsys_data with '{selected_make}'")
                 self.display_carsys_data(selected_make)
+
+    def update_visible_panels(self):
+        for attr, btn in self.tab_buttons.items():
+            if btn.isChecked():
+                if attr == "prequals_panel":
+                    self.handle_prequal_search(self.make_dropdown.currentText(), self.model_dropdown.currentText(), self.year_dropdown.currentText())
+                elif attr == "blacklist_panel":
+                    self.display_blacklist(self.make_dropdown.currentText())
+                elif attr == "goldlist_panel":
+                    self.display_goldlist(self.make_dropdown.currentText())
+                elif attr == "mag_glass_panel":
+                    self.display_mag_glass(self.make_dropdown.currentText())
+                elif attr == "carsys_panel":
+                    self.display_carsys_data(self.make_dropdown.currentText())
+
+    def update_model_dropdown(self):
+        selected_year = self.year_dropdown.currentText().strip()
+        selected_make = self.make_dropdown.currentText().strip()
+        self.populate_models(selected_year, selected_make)
+        import logging
+        logging.debug(f"Updated model dropdown for Year: {selected_year}, Make: {selected_make}")
+        self.update_visible_panels()
+
+    def on_year_selected(self):
+        selected_year = self.year_dropdown.currentText()
+        selected_filter = self.filter_dropdown.currentText()
+        current_make = self.make_dropdown.currentText()
+        if selected_year != "Select Year":
+            try:
+                selected_year_int = int(selected_year)
+                valid_prequal_data = []
+                for item in self.data['prequal']:
+                    try:
+                        if (self.has_valid_prequal(item) and 'Year' in item and pd.notna(item['Year'])):
+                            item_year = int(float(item['Year']))
+                            if item_year == selected_year_int:
+                                valid_prequal_data.append(item)
+                    except (ValueError, TypeError, KeyError):
+                        continue
+                makes = []
+                for item in valid_prequal_data:
+                    try:
+                        if 'Make' in item and item['Make'].strip() and item['Make'].strip().lower() != 'unknown':
+                            makes.append(item['Make'].strip())
+                    except (AttributeError, KeyError):
+                        continue
+                makes = sorted(set(makes))
+                self.make_dropdown.clear()
+                self.make_dropdown.addItem("Select Make")
+                self.make_dropdown.addItem("All")
+                self.make_dropdown.addItems(makes)
+                if current_make in makes:
+                    index = self.make_dropdown.findText(current_make)
+                    if index != -1:
+                        self.make_dropdown.setCurrentIndex(index)
+                self.model_dropdown.clear()
+                self.model_dropdown.addItem("Select Model")
+                updated_make = self.make_dropdown.currentText()
+                if updated_make not in ["Select Make", "All"]:
+                    self.update_model_dropdown()
+            except (ValueError, TypeError) as e:
+                import logging
+                logging.error(f"Error updating makes for year {selected_year}: {e}")
+        if selected_filter in ["Prequals", "Gold and Black", "Blacklist", "Goldlist", "Mag Glass", "All"]:
+            self.perform_search()
+        self.update_visible_panels()
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
