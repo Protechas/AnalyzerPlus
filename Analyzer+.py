@@ -645,7 +645,13 @@ def load_excel_data_to_db(excel_path, table_name, db_path='data.db', sheet_index
             conn.close()
             return "Data loaded successfully"
         elif table_name == 'prequal':
-            # For prequal, just store as JSON
+            # For prequal, just store as JSON - ignore comment columns
+            # Remove any columns that contain 'comment' in their name (case insensitive)
+            comment_columns = [col for col in df.columns if 'comment' in col.lower()]
+            if comment_columns:
+                df = df.drop(columns=comment_columns)
+                logging.info(f"Removed comment columns from prequal data: {comment_columns}")
+            
             df = df.where(pd.notnull(df), None)
             df.dropna(how='all', inplace=True)
             data = df.to_dict(orient='records')
@@ -2457,6 +2463,10 @@ class ModernAnalyzerApp(ModernMainWindow):
         selected_year = self.year_dropdown.currentText()
         selected_filter = self.filter_dropdown.currentText()
         current_make = self.make_dropdown.currentText()
+        
+        print(f"[DEBUG] on_year_selected: Year selected: '{selected_year}'")
+        print(f"[DEBUG] on_year_selected: Current make: '{current_make}'")
+        
         if selected_year != "Select Year":
             try:
                 selected_year_int = int(selected_year)
@@ -2469,6 +2479,9 @@ class ModernAnalyzerApp(ModernMainWindow):
                                 valid_prequal_data.append(item)
                     except (ValueError, TypeError, KeyError):
                         continue
+                
+                print(f"[DEBUG] on_year_selected: Valid data for year {selected_year}: {len(valid_prequal_data)} records")
+                
                 makes = []
                 for item in valid_prequal_data:
                     try:
@@ -2477,17 +2490,28 @@ class ModernAnalyzerApp(ModernMainWindow):
                     except (AttributeError, KeyError):
                         continue
                 makes = sorted(set(makes))
+                
+                print(f"[DEBUG] on_year_selected: Makes found for year {selected_year}: {makes}")
+                print(f"[DEBUG] on_year_selected: Lexus in makes: {'Lexus' in makes}")
+                print(f"[DEBUG] on_year_selected: Kia in makes: {'Kia' in makes}")
+                
                 self.make_dropdown.clear()
                 self.make_dropdown.addItem("Select Make")
                 self.make_dropdown.addItem("All")
                 self.make_dropdown.addItems(makes)
+                
                 if current_make in makes:
                     index = self.make_dropdown.findText(current_make)
                     if index != -1:
                         self.make_dropdown.setCurrentIndex(index)
+                        print(f"[DEBUG] on_year_selected: Restored current make '{current_make}' at index {index}")
+                
                 self.model_dropdown.clear()
                 self.model_dropdown.addItem("Select Model")
                 updated_make = self.make_dropdown.currentText()
+                
+                print(f"[DEBUG] on_year_selected: Updated make: '{updated_make}'")
+                
                 if updated_make not in ["Select Make", "All"]:
                     self.update_model_dropdown()
             except (ValueError, TypeError) as e:
@@ -2500,6 +2524,9 @@ class ModernAnalyzerApp(ModernMainWindow):
     def update_model_dropdown(self):
         selected_year = self.year_dropdown.currentText().strip()
         selected_make = self.make_dropdown.currentText().strip()
+        
+        print(f"[DEBUG] update_model_dropdown: Year='{selected_year}', Make='{selected_make}'")
+        
         self.populate_models(selected_year, selected_make)
         import logging
         logging.debug(f"Updated model dropdown for Year: {selected_year}, Make: {selected_make}")
@@ -2507,34 +2534,56 @@ class ModernAnalyzerApp(ModernMainWindow):
 
     def handle_model_change(self, index):
         selected_model = self.model_dropdown.currentText().strip()
+        selected_make = self.make_dropdown.currentText()
+        selected_year = self.year_dropdown.currentText()
+        
+        print(f"[DEBUG] handle_model_change: Model='{selected_model}', Make='{selected_make}', Year='{selected_year}'")
+        
         import logging
         logging.debug(f"Model selected: {selected_model}")
-        self.perform_search()
+        self.handle_prequal_search(selected_make, selected_model, selected_year)
 
     def populate_models(self, year_text, make_text):
         self.model_dropdown.clear()
         self.model_dropdown.addItem("Select Model")
+        
+        print(f"[DEBUG] populate_models: Year: '{year_text}', Make: '{make_text}'")
+        
         if year_text == "Select Year" or make_text == "Select Make" or make_text == "All":
+            print(f"[DEBUG] populate_models: Early return - invalid selection")
             return
         try:
             year_int = int(year_text)
             matching_models = set()
+            
+            print(f"[DEBUG] populate_models: Searching for models with year {year_int} and make '{make_text}'")
+            
             for item in self.data['prequal']:
                 try:
                     if (self.has_valid_prequal(item) and 'Year' in item and 'Make' in item and 'Model' in item and pd.notna(item['Year']) and item['Make'] == make_text):
                         item_year = int(float(item['Year']))
                         if item_year == year_int:
-                            matching_models.add(str(item['Model']))
+                            model_name = str(item['Model'])
+                            matching_models.add(model_name)
+                            if len(matching_models) <= 5:  # Show first 5 models being added
+                                print(f"[DEBUG] populate_models: Adding model: '{model_name}' (type: {type(item['Model'])})")
                 except (ValueError, TypeError, KeyError):
                     continue
+            
+            print(f"[DEBUG] populate_models: Found {len(matching_models)} matching models")
+            
             if matching_models:
-                self.model_dropdown.addItems(sorted(matching_models))
+                sorted_models = sorted(matching_models)
+                self.model_dropdown.addItems(sorted_models)
+                print(f"[DEBUG] populate_models: Added models: {sorted_models[:5]}...")  # Show first 5
                 import logging
                 logging.info(f"Added {len(matching_models)} models for Year: {year_int}, Make: {make_text}")
             else:
+                print(f"[DEBUG] populate_models: No models found!")
                 import logging
                 logging.warning(f"No models found for Year: {year_int}, Make: {make_text}")
         except (ValueError, TypeError) as e:
+            print(f"[DEBUG] populate_models: Error: {e}")
             import logging
             logging.error(f"Error in populate_models: {e}")
 
@@ -2704,25 +2753,57 @@ class ModernAnalyzerApp(ModernMainWindow):
 
     def handle_prequal_search(self, selected_make, selected_model, selected_year):
         """Handle prequalification search"""
+        print(f"[DEBUG] handle_prequal_search: Make='{selected_make}', Model='{selected_model}', Year='{selected_year}'")
+        
         # Dictionary to hold unique System Acronyms
         unique_results = {}
 
         # Convert selected_model to a string
         selected_model_str = str(selected_model)
 
+        # Debug: Show sample data for the selected make and year
+        sample_data = [item for item in self.data['prequal'] 
+                      if item.get('Make') == selected_make and str(item.get('Year', '')) == str(selected_year)]
+        if sample_data:
+            print(f"[DEBUG] handle_prequal_search: Found {len(sample_data)} records for {selected_make} {selected_year}")
+            print(f"[DEBUG] handle_prequal_search: Sample models in data: {[str(item.get('Model', '')) for item in sample_data[:5]]}")
+            print(f"[DEBUG] handle_prequal_search: Looking for model: '{selected_model_str}'")
+        else:
+            print(f"[DEBUG] handle_prequal_search: No data found for {selected_make} {selected_year}")
+
         # Filtering data based on selections
         filtered_results = [item for item in self.data['prequal']
                             if (selected_make == "All" or item['Make'] == selected_make) and
                             (selected_model == "Select Model" or str(item['Model']) == selected_model_str) and
-                            (selected_year == "Select Year" or str(item['Year']) == selected_year)]
+                            (selected_year == "Select Year" or str(int(float(item['Year']))) == selected_year)]
 
-        print(f"[DEBUG] Number of prequal results found: {len(filtered_results)}")
+        print(f"[DEBUG] handle_prequal_search: Filtered results: {len(filtered_results)}")
+        
+        if filtered_results:
+            print(f"[DEBUG] handle_prequal_search: Sample filtered result: {filtered_results[0]}")
+        else:
+            # Debug: Show why filtering failed
+            print(f"[DEBUG] handle_prequal_search: No results found. Checking each condition:")
+            make_matches = [item for item in self.data['prequal'] if item.get('Make') == selected_make]
+            print(f"[DEBUG] handle_prequal_search: Make matches: {len(make_matches)}")
+            
+            if make_matches:
+                year_matches = [item for item in make_matches if str(item.get('Year', '')) == str(selected_year)]
+                print(f"[DEBUG] handle_prequal_search: Year matches: {len(year_matches)}")
+                
+                if year_matches:
+                    model_matches = [item for item in year_matches if str(item.get('Model', '')) == selected_model_str]
+                    print(f"[DEBUG] handle_prequal_search: Model matches: {len(model_matches)}")
+                    if not model_matches:
+                        print(f"[DEBUG] handle_prequal_search: Model comparison failed. Available models: {list(set([str(item.get('Model', '')) for item in year_matches]))}")
 
         # Populating the dictionary with unique entries based on System Acronym
         for item in filtered_results:
             system_acronym = item.get('Protech Generic System Name.1', 'N/A')  # Match original app column name
             if system_acronym not in unique_results:
                 unique_results[system_acronym] = item  # Store the entire item for display
+
+        print(f"[DEBUG] handle_prequal_search: Unique results: {len(unique_results)}")
 
         # Now, pass the unique items to be displayed
         self.display_results(list(unique_results.values()), context='prequal')
@@ -3343,7 +3424,7 @@ class ModernAnalyzerApp(ModernMainWindow):
                                     load_carsys_data_to_db(filepath, table_name='CarSys', db_path=self.db_path)
                                     load_mag_glass_data(filepath, table_name='mag_glass', db_path=self.db_path)
                         elif config_type == 'prequal':
-                            df = pd.read_excel(filepath)
+                            df = pd.read_excel(filepath, sheet_name=0)
                             if df.empty:
                                 logging.warning(f"{filename} is empty.")
                                 continue
@@ -3543,12 +3624,21 @@ class ModernAnalyzerApp(ModernMainWindow):
     def load_configurations(self):
         """Load configurations from database"""
         logging.debug("Loading configurations...")
+        print(f"[DEBUG] load_configurations: Starting to load configurations...")
+        
         for config_type in ['blacklist', 'goldlist', 'prequal', 'mag_glass', 'carsys']:
             data = load_configuration(config_type, self.db_path)
             self.data[config_type] = data if data else []
+            print(f"[DEBUG] load_configurations: Loaded {len(data)} items for {config_type}")
             logging.debug(f"Loaded {len(data)} items for {config_type}")
+        
+        print(f"[DEBUG] load_configurations: Total prequal data loaded: {len(self.data['prequal'])}")
+        
         if 'prequal' in self.data:
+            print(f"[DEBUG] load_configurations: Calling populate_dropdowns...")
             self.populate_dropdowns()
+        else:
+            print(f"[DEBUG] load_configurations: WARNING - No prequal data found!")
 
     def check_data_loaded(self):
         """Check if data is loaded"""
@@ -3886,6 +3976,9 @@ class ModernAnalyzerApp(ModernMainWindow):
     def populate_dropdowns(self):
         # Direct port of original Analyzer+ logic
         valid_prequal_data = [item for item in self.data['prequal'] if self.has_valid_prequal(item)]
+        
+        print(f"[DEBUG] populate_dropdowns: Total prequal data: {len(self.data['prequal'])}")
+        print(f"[DEBUG] populate_dropdowns: Valid prequal data: {len(valid_prequal_data)}")
 
         years = []
         for item in valid_prequal_data:
@@ -3899,11 +3992,13 @@ class ModernAnalyzerApp(ModernMainWindow):
         self.year_dropdown.clear()
         self.year_dropdown.addItem("Select Year")
         self.year_dropdown.addItems([str(year) for year in unique_years])
+        
         self.make_dropdown.clear()
         self.make_dropdown.addItem("Select Make")
         self.make_dropdown.addItem("All")
         self.model_dropdown.clear()
         self.model_dropdown.addItem("Select Model")
+        
         makes = set()
         for item in valid_prequal_data:
             try:
@@ -3915,8 +4010,15 @@ class ModernAnalyzerApp(ModernMainWindow):
                 continue
         if '' in makes:
             makes.remove('')
-        self.make_dropdown.addItems(sorted(makes))
-        logging.debug(f"Makes populated: {sorted(makes)}")
+        
+        sorted_makes = sorted(makes)
+        self.make_dropdown.addItems(sorted_makes)
+        
+        print(f"[DEBUG] populate_dropdowns: Makes populated: {sorted_makes}")
+        print(f"[DEBUG] populate_dropdowns: Lexus in makes: {'Lexus' in sorted_makes}")
+        print(f"[DEBUG] populate_dropdowns: Kia in makes: {'Kia' in sorted_makes}")
+        
+        logging.debug(f"Makes populated: {sorted_makes}")
 
     def has_valid_prequal(self, item):
         # Match original app logic - only check Calibration Pre-Requisites
