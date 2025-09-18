@@ -11,18 +11,26 @@ import json
 import re
 from datetime import datetime
 import pandas as pd
-from PyQt5.QtCore import Qt, QUrl, QTimer, QPropertyAnimation, QEasingCurve, QRect
-from PyQt5.QtGui import QDesktopServices, QIcon, QKeySequence, QFont, QPalette, QColor, QPixmap, QPainter, QLinearGradient
+from PyQt5.QtCore import Qt, QUrl, QTimer, QPropertyAnimation, QEasingCurve, QRect, QRectF, pyqtProperty, pyqtSignal
+from PyQt5.QtGui import QDesktopServices, QIcon, QKeySequence, QFont, QPalette, QColor, QPixmap, QPainter, QLinearGradient, QPen, QBrush
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-    QLineEdit, QComboBox, QTextBrowser, QListWidget, QLabel, 
-    QPushButton, QToolBar, QStatusBar, QMessageBox, QDialog, 
-    QFileDialog, QSplitter, QFrame, QProgressBar, QInputDialog,
-    QShortcut, QSizePolicy, QSlider, QFormLayout, QTabWidget,
-    QScrollArea, QGridLayout, QGroupBox, QCheckBox, QRadioButton,
-    QButtonGroup, QStackedWidget, QGraphicsDropShadowEffect,
-    QGraphicsOpacityEffect, QStyleFactory, QStyle
+    QListWidget, QLabel, QMessageBox, QFileDialog, QInputDialog,
+    QShortcut, QSizePolicy, QFormLayout, QScrollArea, QGridLayout, 
+    QGroupBox, QCheckBox, QRadioButton, QButtonGroup, QStackedWidget, 
+    QStyle, QFrame, QPushButton, QComboBox, QLineEdit, QTextBrowser,
+    QProgressBar, QSlider, QTabWidget, QSplitter, QStatusBar, QToolBar,
+    QDialog
 )
+from PyQt5.QtWidgets import QStyleFactory
+from PyQt5.QtWidgets import QGraphicsDropShadowEffect, QGraphicsOpacityEffect
+from modern_components import (
+    ModernDialog, ModernButton, ModernComboBox, ModernTextBrowser,
+    ModernLineEdit, ModernProgressBar, ModernSlider, ModernTabWidget,
+    ModernSplitter, ModernStatusBar, ModernToolBar
+)
+from multi_vehicle_compare import MultiVehicleCompareDialog
+from database_utils import get_prequal_data, get_unique_makes, get_unique_models, get_unique_years
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -444,6 +452,22 @@ def initialize_db(db_path='data.db'):
             );
         ''')
         cursor.execute('''
+            CREATE TABLE IF NOT EXISTS manufacturer_chart (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                Year TEXT,
+                Make TEXT,
+                Model TEXT,
+                Calibration_Type TEXT,
+                Protech_Generic_System_Name TEXT,
+                SME_Generic_System_Name TEXT,
+                SME_Calibration_Type TEXT,
+                Feature TEXT,
+                Service_Information_Hyperlink TEXT,
+                Calibration_Pre_Requisites TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        ''')
+        cursor.execute('''
             CREATE TABLE IF NOT EXISTS leader_log (
                 id INTEGER PRIMARY KEY,
                 pin TEXT,
@@ -601,6 +625,22 @@ def load_excel_data_to_db(excel_path, table_name, db_path='data.db', sheet_index
     try:
         df = pd.read_excel(excel_path, sheet_name=sheet_index)
         logging.debug(f"Data loaded from sheet index '{sheet_index}': {df.head()}")
+        logging.error(error_message)
+        error_messages.append(error_message)
+        QMessageBox.critical(parent, "File Access Error", error_message)
+        return error_message
+        error_message = f"File not found: {excel_path}"
+        logging.error(error_message)
+        if parent:
+            QMessageBox.critical(parent, "File Not Found", error_message)
+        return error_message
+    except Exception as read_error:
+        error_message = f"Error reading Excel file {excel_path}: {str(read_error)}"
+        logging.error(error_message)
+        error_messages.append(error_message)
+        if parent:
+            QMessageBox.critical(parent, "File Read Error", error_message)
+            return error_message
         # Normalize columns
         original_cols = list(df.columns)
         norm_map = {col: normalize_col(col) for col in original_cols}
@@ -701,6 +741,150 @@ def load_excel_data_to_db(excel_path, table_name, db_path='data.db', sheet_index
             cursor.execute('DROP TABLE IF EXISTS carsys')
             conn.commit()
             df.to_sql('carsys', conn, if_exists='replace', index=False)
+            conn.close()
+            return "Data loaded successfully"
+        elif table_name == 'manufacturer_chart':
+            # For manufacturer chart, create table with expected columns and load all data
+            # Define expected columns for manufacturer chart (normalized)
+            expected_columns = [
+                'Year', 'Make', 'Model', 'Calibration_Type', 'Protech_Generic_System_Name',
+                'SME_Generic_System_Name', 'SME_Calibration_Type', 'Feature',
+                'Service_Information_Hyperlink', 'Calibration_Pre_Requisites'
+            ]
+            
+            # Normalize the dataframe columns to match expected format
+            df.columns = [col.strip() for col in df.columns]
+            
+            # Create the table with proper schema
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            
+            # Check if table exists, if not create it
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='manufacturer_chart'")
+            if not cursor.fetchone():
+                logging.info("Creating manufacturer_chart table")
+            
+                # Create table with all expected columns
+                create_table_sql = """
+                CREATE TABLE manufacturer_chart (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    Year TEXT,
+                    Make TEXT,
+                    Model TEXT,
+                    Calibration_Type TEXT,
+                    Protech_Generic_System_Name TEXT,
+                    SME_Generic_System_Name TEXT,
+                    SME_Calibration_Type TEXT,
+                    Feature TEXT,
+                    Service_Information_Hyperlink TEXT,
+                    Calibration_Pre_Requisites TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+                cursor.execute(create_table_sql)
+                logging.info("Created manufacturer_chart table")
+            
+            # Log available columns for debugging
+            logging.info(f"Available columns in Excel file: {list(df.columns)}")
+            
+            # Debug: Check if this looks like an Acura file by checking the data
+            if len(df) > 0:
+                sample_make = str(df.iloc[0].get('Make', df.iloc[0].get('make', '')))
+                if 'acura' in sample_make.lower():
+                    logging.info(f"This appears to be an Acura file. Sample make: '{sample_make}'")
+                    logging.info(f"All column names: {[col for col in df.columns]}")
+            
+            # Create a mapping dictionary to handle various column name formats
+            column_mapping = {}
+            for col in df.columns:
+                col_lower = col.lower().strip()
+                col_clean = col_lower.replace(' ', '').replace('-', '').replace('_', '')
+                
+                # Map exact matches first
+                if col_lower == 'year':
+                    column_mapping['Year'] = col
+                elif col_lower == 'make':
+                    column_mapping['Make'] = col
+                elif col_lower == 'model':
+                    column_mapping['Model'] = col
+                elif col_lower == 'calibration type':
+                    column_mapping['Calibration_Type'] = col
+                elif col_lower == 'protech generic system name':
+                    column_mapping['Protech_Generic_System_Name'] = col
+                elif col_lower == 'sme generic system name':
+                    column_mapping['SME_Generic_System_Name'] = col
+                elif col_lower == 'sme calibration type':
+                    column_mapping['SME_Calibration_Type'] = col
+                elif col_lower == 'feature':
+                    column_mapping['Feature'] = col
+                elif col_lower == 'service information hyperlink':
+                    column_mapping['Service_Information_Hyperlink'] = col
+                elif col_lower == 'calibration pre-requisites':
+                    column_mapping['Calibration_Pre_Requisites'] = col
+                # Fallback to partial matches
+                elif 'year' in col_lower:
+                    column_mapping['Year'] = col
+                elif 'make' in col_lower:
+                    column_mapping['Make'] = col
+                elif 'model' in col_lower:
+                    column_mapping['Model'] = col
+                elif 'calibration' in col_lower and 'type' in col_lower:
+                    column_mapping['Calibration_Type'] = col
+                elif 'protech' in col_lower and 'system' in col_lower and 'name' in col_lower:
+                    column_mapping['Protech_Generic_System_Name'] = col
+                elif 'sme' in col_lower and 'system' in col_lower and 'name' in col_lower:
+                    column_mapping['SME_Generic_System_Name'] = col
+                elif 'sme' in col_lower and 'calibration' in col_lower and 'type' in col_lower:
+                    column_mapping['SME_Calibration_Type'] = col
+                elif 'feature' in col_lower:
+                    column_mapping['Feature'] = col
+                elif 'service' in col_lower and 'hyperlink' in col_lower:
+                    column_mapping['Service_Information_Hyperlink'] = col
+                elif 'prerequisites' in col_lower or 'pre-requisites' in col_lower:
+                    column_mapping['Calibration_Pre_Requisites'] = col
+            
+            logging.info(f"Column mapping: {column_mapping}")
+            
+            # Insert data - map columns as best as possible
+            for index, row in df.iterrows():
+                # Extract values using the mapping
+                year = str(row.get(column_mapping.get('Year', 'Year'), '')).strip() if pd.notna(row.get(column_mapping.get('Year', 'Year'), '')) else ''
+                make = str(row.get(column_mapping.get('Make', 'Make'), '')).strip() if pd.notna(row.get(column_mapping.get('Make', 'Make'), '')) else ''
+                model = str(row.get(column_mapping.get('Model', 'Model'), '')).strip() if pd.notna(row.get(column_mapping.get('Model', 'Model'), '')) else ''
+                calibration_type = str(row.get(column_mapping.get('Calibration_Type', 'Calibration Type'), '')).strip() if pd.notna(row.get(column_mapping.get('Calibration_Type', 'Calibration Type'), '')) else ''
+                protech_system = str(row.get(column_mapping.get('Protech_Generic_System_Name', 'Protech Generic System Name'), '')).strip() if pd.notna(row.get(column_mapping.get('Protech_Generic_System_Name', 'Protech Generic System Name'), '')) else ''
+                sme_system = str(row.get(column_mapping.get('SME_Generic_System_Name', 'SME Generic System Name'), '')).strip() if pd.notna(row.get(column_mapping.get('SME_Generic_System_Name', 'SME Generic System Name'), '')) else ''
+                sme_calibration = str(row.get(column_mapping.get('SME_Calibration_Type', 'SME Calibration Type'), '')).strip() if pd.notna(row.get(column_mapping.get('SME_Calibration_Type', 'SME Calibration Type'), '')) else ''
+                feature = str(row.get(column_mapping.get('Feature', 'Feature'), '')).strip() if pd.notna(row.get(column_mapping.get('Feature', 'Feature'), '')) else ''
+                service_link = str(row.get(column_mapping.get('Service_Information_Hyperlink', 'Service Information Hyperlink'), '')).strip() if pd.notna(row.get(column_mapping.get('Service_Information_Hyperlink', 'Service Information Hyperlink'), '')) else ''
+                prerequisites = str(row.get(column_mapping.get('Calibration_Pre_Requisites', 'Calibration Pre-Requisites'), '')).strip() if pd.notna(row.get(column_mapping.get('Calibration_Pre_Requisites', 'Calibration Pre-Requisites'), '')) else ''
+                
+                # Insert the record
+                insert_sql = """
+                INSERT INTO manufacturer_chart (
+                    Year, Make, Model, Calibration_Type, Protech_Generic_System_Name,
+                    SME_Generic_System_Name, SME_Calibration_Type, Feature,
+                    Service_Information_Hyperlink, Calibration_Pre_Requisites
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """
+                cursor.execute(insert_sql, (
+                    year, make, model, calibration_type, protech_system,
+                    sme_system, sme_calibration, feature, service_link, prerequisites
+                ))
+                
+                # Log the first few records for debugging
+                if index < 3:
+                    logging.info(f"Inserted record {index + 1}: Year='{year}', Make='{make}', Model='{model}'")
+                
+                # Log every 1000th record to see what data is being loaded
+                if index % 1000 == 0:
+                    logging.info(f"Processing record {index}: Year='{year}', Make='{make}', Model='{model}'")
+                
+                # Log specifically if we find Acura data
+                if make.upper() == 'ACURA':
+                    logging.info(f"Found Acura record {index}: Year='{year}', Make='{make}', Model='{model}'")
+            
+            conn.commit()
             conn.close()
             return "Data loaded successfully"
         else:
@@ -1577,7 +1761,8 @@ class ManageDataListsDialog(ModernDialog):
         config_display_names = {
             "blacklist": "Blacklist",
             "goldlist": "Goldlist",
-            "prequal": "Prequals (Longsheets)"
+            "prequal": "Prequals (Longsheets)",
+            "manufacturer_chart": "Manufacturer Chart"
         }
 
         for config_key, display_name in config_display_names.items():
@@ -1684,44 +1869,93 @@ class ManageDataListsDialog(ModernDialog):
                     self.parent.clear_data("mag_glass")
 
                 data_loaded = False
-                for i, (filename, filepath) in enumerate(files.items()):
-                    try:
-                        if config_type in ['blacklist', 'goldlist']:
-                            result = load_excel_data_to_db(filepath, config_type, db_path=self.parent.db_path, sheet_index=1)
-                            if result == "Data loaded successfully":
-                                data_loaded = True
-                                if config_type == 'goldlist':
-                                    load_carsys_data_to_db(filepath, table_name='CarSys', db_path=self.parent.db_path)
-                                    load_mag_glass_data(filepath, table_name='mag_glass', db_path=self.parent.db_path)
-                        elif config_type == 'prequal':
-                            df = pd.read_excel(filepath)
+                
+                # Special handling for manufacturer_chart - use simple pandas approach like prequals
+                logging.info(f"Processing config_type: {config_type}")
+                if config_type == 'manufacturer_chart':
+                    logging.info("Loading manufacturer chart data using simple pandas approach...")
+                    
+                    # Clear existing manufacturer chart data
+                    conn = sqlite3.connect(self.parent.db_path)
+                    cursor = conn.cursor()
+                    cursor.execute("DELETE FROM manufacturer_chart")
+                    conn.commit()
+                    conn.close()
+                    logging.info("Cleared existing manufacturer chart data")
+                    
+                    # Process each file like prequals
+                    for i, (filename, filepath) in enumerate(files.items()):
+                        try:
+                            logging.info(f"Processing manufacturer chart file: {filename}")
+                            if 'acura' in filename.lower():
+                                logging.info(f"Found potential Acura file: {filename}")
+                            
+                            # Check for "Model Version" sheet first, then fall back to first sheet
+                            try:
+                                # Try to read the "Model Version" sheet first
+                                df = pd.read_excel(filepath, sheet_name="Model Version")
+                                logging.info(f"Found 'Model Version' sheet in {filename}")
+                            except:
+                                # If "Model Version" sheet doesn't exist, use the first sheet
+                                df = pd.read_excel(filepath)
+                                logging.info(f"Using first sheet for {filename}")
+                            
                             if df.empty:
                                 logging.warning(f"{filename} is empty.")
                                 continue
+                            
+                            # Log the columns found in this file
+                            logging.info(f"Columns in {filename}: {list(df.columns)}")
+                            
+                            # Convert to records and save to manufacturer_chart table
                             data = df.to_dict(orient='records')
-                            update_configuration(config_type, folder_path, data, self.parent.db_path)
+                            self.save_manufacturer_chart_data(data, self.parent.db_path)
                             data_loaded = True
-                        elif config_type == 'mag_glass':
-                            result = load_mag_glass_data(filepath, config_type, db_path=self.parent.db_path)
-                            if result == "Data loaded successfully":
+                            logging.info(f"Loaded manufacturer chart data from: {filename}")
+                            
+                        except Exception as e:
+                            logging.error(f"Error loading manufacturer chart from {filename}: {str(e)}")
+                        self.parent.progress_bar.setValue(i + 1)
+                else:
+                    # Process individual files for other data types
+                    for i, (filename, filepath) in enumerate(files.items()):
+                        try:
+                            if config_type in ['blacklist', 'goldlist']:
+                                result = load_excel_data_to_db(filepath, config_type, db_path=self.parent.db_path, sheet_index=1)
+                                if result == "Data loaded successfully":
+                                    data_loaded = True
+                                    if config_type == 'goldlist':
+                                        load_carsys_data_to_db(filepath, table_name='CarSys', db_path=self.parent.db_path)
+                                        load_mag_glass_data(filepath, table_name='mag_glass', db_path=self.parent.db_path)
+                            elif config_type == 'prequal':
+                                df = pd.read_excel(filepath)
+                                if df.empty:
+                                    logging.warning(f"{filename} is empty.")
+                                    continue
+                                data = df.to_dict(orient='records')
+                                update_configuration(config_type, folder_path, data, self.parent.db_path)
                                 data_loaded = True
-                        elif config_type == 'CarSys':
-                            result = load_excel_data_to_db(filepath, config_type, db_path=self.parent.db_path, sheet_index=0)
-                            if result == "Data loaded successfully":
+                            elif config_type == 'mag_glass':
+                                result = load_mag_glass_data(filepath, config_type, db_path=self.parent.db_path)
+                                if result == "Data loaded successfully":
+                                    data_loaded = True
+                            elif config_type == 'CarSys':
+                                result = load_excel_data_to_db(filepath, config_type, db_path=self.parent.db_path, sheet_index=0)
+                                if result == "Data loaded successfully":
+                                    data_loaded = True
+                            else:
+                                df = pd.read_excel(filepath)
+                                if df.empty:
+                                    logging.warning(f"{filename} is empty.")
+                                    continue
+                                data = df.to_dict(orient='records')
+                                update_configuration(config_type, folder_path, data, self.parent.db_path)
                                 data_loaded = True
-                        else:
-                            df = pd.read_excel(filepath)
-                            if df.empty:
-                                logging.warning(f"{filename} is empty.")
-                                continue
-                            data = df.to_dict(orient='records')
-                            update_configuration(config_type, folder_path, data, self.parent.db_path)
-                            data_loaded = True
-                    except Exception as e:
-                        logging.error(f"Error loading {filename}: {str(e)}")
-                        QMessageBox.critical(self, "Load Error", f"Failed to load {filename}: {str(e)}")
-                    self.parent.progress_bar.setValue(i + 1)
-
+                        except Exception as e:
+                            logging.error(f"Error loading {filename}: {str(e)}")
+                        except Exception as e:
+                            logging.error(f"Error loading {filename}: {str(e)}")
+                        self.parent.progress_bar.setValue(i + 1)
                 save_path_to_db(config_type, folder_path, self.parent.db_path)
                 if config_type == 'goldlist':
                     save_path_to_db('CarSys', folder_path, self.parent.db_path)
@@ -1731,6 +1965,8 @@ class ManageDataListsDialog(ModernDialog):
                 logging.error(f"Error saving path for {config_type}: {str(e)}")
                 QMessageBox.critical(self, "Error", f"Failed to save path for {config_type}: {str(e)}")
 
+
+
         self.parent.progress_bar.setVisible(False)
         self.parent.load_configurations()
         self.parent.populate_dropdowns()
@@ -1738,6 +1974,173 @@ class ManageDataListsDialog(ModernDialog):
         msg = self.parent.create_styled_messagebox("Success", "Paths saved and data loaded successfully!", QMessageBox.Information)
         msg.exec_()
         self.accept()
+
+    def load_manufacturer_chart_data(self, filepath, db_path):
+        """Load manufacturer chart data from Excel file with specified columns"""
+        try:
+            # Read Excel file
+            df = pd.read_excel(filepath)
+            
+            if df.empty:
+                return "No data found in file"
+            
+            # Normalize column names (case-insensitive, remove special characters)
+            df.columns = [normalize_col(col) for col in df.columns]
+            
+            # Define expected column names (normalized)
+            expected_columns = [
+                'year', 'make', 'model', 'calibrationtype', 'protechgenericsystemname',
+                'smegenericsystemname', 'smecalibrationtype', 'feature', 
+                'serviceinformationhyperlink', 'calibrationprerequisites'
+            ]
+            
+            # Check if required columns exist (with variations)
+            missing_columns = []
+            for expected_col in expected_columns:
+                if not any(expected_col in col.lower() for col in df.columns):
+                    missing_columns.append(expected_col)
+            
+            if missing_columns:
+                logging.warning(f"Missing columns in manufacturer chart: {missing_columns}")
+                # Continue with available columns
+            
+            # Create table if it doesn't exist
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            
+            # Create manufacturer_chart table with all possible columns
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS manufacturer_chart (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    Year TEXT,
+                    Make TEXT,
+                    Model TEXT,
+                    Calibration_Type TEXT,
+                    Protech_Generic_System_Name TEXT,
+                    SME_Generic_System_Name TEXT,
+                    SME_Calibration_Type TEXT,
+                    Feature TEXT,
+                    Service_Information_Hyperlink TEXT,
+                    Calibration_Pre_Requisites TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # Clear existing data
+            cursor.execute("DELETE FROM manufacturer_chart")
+            
+            # Map normalized columns to database columns
+            column_mapping = {
+                'year': 'Year',
+                'make': 'Make', 
+                'model': 'Model',
+                'calibrationtype': 'Calibration_Type',
+                'protechgenericsystemname': 'Protech_Generic_System_Name',
+                'smegenericsystemname': 'SME_Generic_System_Name',
+                'smecalibrationtype': 'SME_Calibration_Type',
+                'feature': 'Feature',
+                'serviceinformationhyperlink': 'Service_Information_Hyperlink',
+                'calibrationprerequisites': 'Calibration_Pre_Requisites'
+            }
+            
+            # Prepare data for insertion
+            records = []
+            for _, row in df.iterrows():
+                record = {}
+                for normalized_col, db_col in column_mapping.items():
+                    # Find matching column in dataframe
+                    matching_col = None
+                    for col in df.columns:
+                        if normalized_col in col.lower():
+                            matching_col = col
+                            break
+                    
+                    if matching_col and matching_col in row:
+                        value = row[matching_col]
+                        if pd.isna(value):
+                            record[db_col] = None
+                        else:
+                            record[db_col] = str(value)
+                    else:
+                        record[db_col] = None
+                
+                records.append(record)
+            
+            # Insert data
+            if records:
+                placeholders = ', '.join(['?' for _ in column_mapping.values()])
+                columns = ', '.join(column_mapping.values())
+                cursor.executemany(
+                    f"INSERT INTO manufacturer_chart ({columns}) VALUES ({placeholders})",
+                    [tuple(record.values()) for record in records]
+                )
+                
+                conn.commit()
+                conn.close()
+                return "Data loaded successfully"
+            else:
+                conn.close()
+                return "No valid records found"
+                
+        except Exception as e:
+            logging.error(f"Error loading manufacturer chart data: {str(e)}")
+            return f"Error: {str(e)}"
+
+    def save_manufacturer_chart_data(self, data, db_path):
+        """Save manufacturer chart data to database using simple approach like prequals"""
+        try:
+            # Create table if it doesn't exist
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            
+            # Create manufacturer_chart table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS manufacturer_chart (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    Year TEXT,
+                    Make TEXT,
+                    Model TEXT,
+                    Calibration_Type TEXT,
+                    Protech_Generic_System_Name TEXT,
+                    SME_Generic_System_Name TEXT,
+                    SME_Calibration_Type TEXT,
+                    Feature TEXT,
+                    Service_Information_Hyperlink TEXT,
+                    Calibration_Pre_Requisites TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # Insert data using simple approach
+            for record in data:
+                # Map columns flexibly (case-insensitive)
+                year = record.get('Year', record.get('year', ''))
+                make = record.get('Make', record.get('make', ''))
+                model = record.get('Model', record.get('model', ''))
+                calibration_type = record.get('Calibration Type', record.get('calibration type', record.get('CalibrationType', '')))
+                protech_system = record.get('Protech Generic System Name', record.get('protech generic system name', ''))
+                sme_system = record.get('SME Generic System Name', record.get('sme generic system name', ''))
+                sme_calibration = record.get('SME Calibration Type', record.get('sme calibration type', ''))
+                feature = record.get('Feature', record.get('feature', ''))
+                service_link = record.get('Service Information Hyperlink', record.get('service information hyperlink', ''))
+                prerequisites = record.get('Calibration Pre-Requisites', record.get('calibration pre-requisites', ''))
+                
+                cursor.execute('''
+                    INSERT INTO manufacturer_chart 
+                    (Year, Make, Model, Calibration_Type, Protech_Generic_System_Name, 
+                     SME_Generic_System_Name, SME_Calibration_Type, Feature, 
+                     Service_Information_Hyperlink, Calibration_Pre_Requisites)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (year, make, model, calibration_type, protech_system, 
+                      sme_system, sme_calibration, feature, service_link, prerequisites))
+            
+            conn.commit()
+            conn.close()
+            logging.info(f"Saved {len(data)} manufacturer chart records to database")
+            
+        except Exception as e:
+            logging.error(f"Error saving manufacturer chart data: {str(e)}")
+            raise
 
 def get_theme_palette(theme):
     palettes = {
@@ -1819,6 +2222,22 @@ class ModernAnalyzerApp(ModernMainWindow):
         self.data = {'blacklist': [], 'goldlist': [], 'prequal': [], 'mag_glass': [], 'carsys': []}
         self.make_map = {}
         self.model_map = {}
+        
+        # Lock state variables
+        self.year_locked = False
+        self.make_locked = False
+        self.model_locked = False
+        self.locked_year = None
+        self.locked_make = None
+        self.locked_model = None
+        
+        # Region data
+        self.region_makes = {
+            'German': ['BMW', 'MINI', 'Rolls-Royce', 'Volkswagen', 'Audi', 'Porsche', 'Fiat', 'Alfa Romeo', 'Jaguar', 'Land Rover', 'Volvo'],
+            'Asian': ['Honda', 'Acura', 'Toyota', 'Lexus', 'Nissan', 'Infinity', 'Mitsubishi', 'Mazda', 'Subaru'],
+            'US': ['Buick', 'Cadillac', 'Chevrolet', 'GMC', 'Ford', 'Lincoln', 'Mercury', 'Chrysler', 'Dodge', 'Jeep', 'Ram']
+        }
+        self.current_region = 'ALL'  # Default to ALL
         self.setup_ui()
         self.prompt_user_pin()
         self.load_configurations()
@@ -2059,6 +2478,66 @@ class ModernAnalyzerApp(ModernMainWindow):
 
         header_layout.addStretch()
 
+        # Region toggle section
+        region_card = ModernCard()
+        region_card.setFixedSize(200, 60)
+        region_card.setObjectName("region_card")  # Add object name for styling
+        region_layout = QVBoxLayout(region_card)
+        region_layout.setContentsMargins(10, 6, 10, 6)
+        
+        # Region toggle button - styled as a toggle switch
+        self.region_toggle_button = QPushButton("ALL/REGION")
+        self.region_toggle_button.setCheckable(True)
+        self.region_toggle_button.setFixedSize(140, 32)
+        self.region_toggle_button.setStyleSheet("""
+            QPushButton {
+                background: #28a745;
+                color: white;
+                border: 1px solid #28a745;
+                border-radius: 16px;
+                font-size: 12px;
+                font-weight: bold;
+                font-family: 'Segoe UI', Arial, sans-serif;
+                text-align: center;
+                padding: 4px 8px;
+            }
+            QPushButton:hover {
+                background: #218838;
+                border-color: #218838;
+            }
+            QPushButton:checked {
+                background: #007bff;
+                border-color: #007bff;
+            }
+            QPushButton:checked:hover {
+                background: #0056b3;
+                border-color: #0056b3;
+            }
+        """)
+        self.region_toggle_button.clicked.connect(self.toggle_region_mode)
+        region_layout.addWidget(self.region_toggle_button)
+        
+        # Region dropdown (initially hidden)
+        self.region_dropdown = ModernComboBox()
+        self.region_dropdown.addItems(["Asian", "German", "US"])
+        self.region_dropdown.setStyleSheet("""
+            QComboBox {
+                background: #fff;
+                color: #20567C;
+                border: 1px solid #dee2e6;
+                border-radius: 4px;
+                padding: 2px 8px;
+                font-size: 11px;
+                min-width: 80px;
+            }
+        """)
+        self.region_dropdown.currentTextChanged.connect(self.on_region_changed)
+        self.region_dropdown.hide()
+        self.region_dropdown.setMaximumHeight(0)  # Ensure it takes no space when hidden
+        region_layout.addWidget(self.region_dropdown)
+        
+        header_layout.addWidget(region_card)
+
         # User info section
         user_card = ModernCard()
         user_card.setFixedSize(220, 60)
@@ -2119,6 +2598,7 @@ class ModernAnalyzerApp(ModernMainWindow):
         self.addToolBar(self.toolbar)
         self.add_toolbar_button("Manage Lists", self.open_admin, "admin_button")
         self.add_toolbar_button("Refresh Lists", self.refresh_lists, "refresh_button")
+        self.add_toolbar_button("Compare Vehicles", self.open_compare_dialog, "compare_button")
         clear_button = ModernButton("Clear Filters", style="secondary")
         clear_button.clicked.connect(self.clear_filters)
         self.toolbar.addWidget(clear_button)
@@ -2151,87 +2631,110 @@ class ModernAnalyzerApp(ModernMainWindow):
         search_layout.setSpacing(16)
         search_layout.setContentsMargins(18, 10, 18, 10)
 
-        # Year
+        # Shared style for field containers (white rounded box with label and input)
+        field_container_style = (
+            "QWidget { background: #ffffff; border: 2px solid #e9ecef; border-radius: 12px; padding: 6px 10px; }"
+            "QLabel { font-weight: 600; font-size: 14px; color: #20567C; margin-right: 8px; }"
+        )
+        
+        # Lock button styles
+        self.lock_button_style = (
+            "QPushButton { background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 4px; padding: 4px; min-width: 20px; max-width: 20px; }"
+            "QPushButton:hover { background: #e9ecef; }"
+            "QPushButton:pressed { background: #dee2e6; }"
+        )
+        
+        self.lock_button_style_locked = (
+            "QPushButton { background: #28a745; border: 1px solid #28a745; border-radius: 4px; padding: 4px; min-width: 20px; max-width: 20px; color: white; }"
+            "QPushButton:hover { background: #218838; }"
+            "QPushButton:pressed { background: #1e7e34; }"
+        )
+
+        # Year container (label + dropdown + lock button inside one white box)
+        year_container = QWidget()
+        year_container.setStyleSheet(field_container_style)
+        year_layout = QHBoxLayout(year_container)
+        year_layout.setSpacing(8)
+        year_layout.setContentsMargins(10, 6, 10, 6)
         year_label = QLabel("Year:")
-        year_label.setStyleSheet("font-weight: 600; font-size: 14px; color: #20567C; margin-right: 4px;")
-        search_layout.addWidget(year_label)
+        year_layout.addWidget(year_label)
         self.year_dropdown = ModernComboBox()
         self.year_dropdown.setFixedWidth(120)
         self.year_dropdown.setStyleSheet("padding: 6px 12px; font-size: 14px;")
         self.year_dropdown.addItem("Select Year")
         self.year_dropdown.currentIndexChanged.connect(self.on_year_selected)
-        search_layout.addWidget(self.year_dropdown)
+        year_layout.addWidget(self.year_dropdown)
+        
+        # Year lock button
+        self.year_lock_button = QPushButton("🔓")
+        self.year_lock_button.setToolTip("Lock Year selection")
+        self.year_lock_button.setStyleSheet(self.lock_button_style)
+        self.year_lock_button.clicked.connect(lambda: self.toggle_lock('year'))
+        year_layout.addWidget(self.year_lock_button)
+        search_layout.addWidget(year_container)
 
-        # Make
+        # Make container (label + dropdown + lock button)
+        make_container = QWidget()
+        make_container.setStyleSheet(field_container_style)
+        make_layout = QHBoxLayout(make_container)
+        make_layout.setSpacing(8)
+        make_layout.setContentsMargins(10, 6, 10, 6)
         make_label = QLabel("Make:")
-        make_label.setStyleSheet("font-weight: 600; font-size: 14px; color: #20567C; margin-left: 8px; margin-right: 4px;")
-        search_layout.addWidget(make_label)
+        make_layout.addWidget(make_label)
         self.make_dropdown = ModernComboBox()
         self.make_dropdown.setFixedWidth(120)
         self.make_dropdown.setStyleSheet("padding: 6px 12px; font-size: 14px;")
         self.make_dropdown.addItem("Select Make")
         self.make_dropdown.addItem("All")
         self.make_dropdown.currentIndexChanged.connect(self.update_model_dropdown)
-        search_layout.addWidget(self.make_dropdown)
+        make_layout.addWidget(self.make_dropdown)
+        
+        # Make lock button
+        self.make_lock_button = QPushButton("🔓")
+        self.make_lock_button.setToolTip("Lock Make selection")
+        self.make_lock_button.setStyleSheet(self.lock_button_style)
+        self.make_lock_button.clicked.connect(lambda: self.toggle_lock('make'))
+        make_layout.addWidget(self.make_lock_button)
+        search_layout.addWidget(make_container)
 
-        # Model
+        # Model container (label + dropdown + lock button)
+        model_container = QWidget()
+        model_container.setStyleSheet(field_container_style)
+        model_layout = QHBoxLayout(model_container)
+        model_layout.setSpacing(8)
+        model_layout.setContentsMargins(10, 6, 10, 6)
         model_label = QLabel("Model:")
-        model_label.setStyleSheet("font-weight: 600; font-size: 14px; color: #20567C; margin-left: 8px; margin-right: 4px;")
-        search_layout.addWidget(model_label)
+        model_layout.addWidget(model_label)
         self.model_dropdown = ModernComboBox()
         self.model_dropdown.setFixedWidth(130)
         self.model_dropdown.setStyleSheet("padding: 6px 12px; font-size: 14px;")
         self.model_dropdown.addItem("Select Model")
         self.model_dropdown.currentIndexChanged.connect(self.handle_model_change)
-        search_layout.addWidget(self.model_dropdown)
+        model_layout.addWidget(self.model_dropdown)
+        
+        # Model lock button
+        self.model_lock_button = QPushButton("🔓")
+        self.model_lock_button.setToolTip("Lock Model selection")
+        self.model_lock_button.setStyleSheet(self.lock_button_style)
+        self.model_lock_button.clicked.connect(lambda: self.toggle_lock('model'))
+        model_layout.addWidget(self.model_lock_button)
+        search_layout.addWidget(model_container)
 
-        # Search bar
+        # Search container (label + line edit)
+        search_container = QWidget()
+        search_container.setStyleSheet(field_container_style)
+        search_container_layout = QHBoxLayout(search_container)
+        search_container_layout.setSpacing(8)
+        search_container_layout.setContentsMargins(10, 6, 10, 6)
         search_label = QLabel("Search:")
-        search_label.setStyleSheet("font-weight: 600; font-size: 14px; color: #20567C; margin-left: 12px; margin-right: 4px;")
-        search_layout.addWidget(search_label)
-        self.search_bar = ModernLineEdit("Enter DTC code or description")
-        self.search_bar.setFixedWidth(210)
+        search_container_layout.addWidget(search_label)
+        self.search_bar = ModernLineEdit("Enter DTC code or description (searches Blacklist & Goldlist only)")
+        self.search_bar.setFixedWidth(260)
         self.search_bar.setStyleSheet("padding: 6px 12px; font-size: 12px;")
         self.search_bar.returnPressed.connect(self.perform_search)
-        self.search_bar.textChanged.connect(self.update_suggestions)
-        search_layout.addWidget(self.search_bar)
-
-        # Filter
-        filter_label = QLabel("Filter:")
-        filter_label.setStyleSheet("font-weight: 600; font-size: 14px; color: #20567C; margin-left: 12px; margin-right: 4px;")
-        search_layout.addWidget(filter_label)
-        self.filter_dropdown = ModernComboBox()
-        self.filter_dropdown.setFixedWidth(130)
-        self.filter_dropdown.setStyleSheet("padding: 6px 12px; font-size: 14px;")
-        self.filter_dropdown.addItems(["Select List", "Blacklist", "Goldlist", "Prequals", "Mag Glass", "CarSys", "Gold and Black", "Black/Gold/Mag", "All"])
-        self.filter_dropdown.currentIndexChanged.connect(self.filter_changed)
-        search_layout.addWidget(self.filter_dropdown)
-
-        # Suggestions list (hidden by default)
-        self.suggestions_list = QListWidget()
-        self.suggestions_list.setMaximumHeight(100)
-        self.suggestions_list.hide()
-        self.suggestions_list.itemClicked.connect(self.on_suggestion_clicked)
-        self.suggestions_list.setStyleSheet("""
-            QListWidget {
-                border: 2px solid #e9ecef;
-                border-radius: 8px;
-                background: #fff;
-                font-size: 13px;
-            }
-            QListWidget::item {
-                padding: 5px;
-                border-bottom: 1px solid #f8f9fa;
-            }
-            QListWidget::item:hover {
-                background: #f8f9fa;
-            }
-            QListWidget::item:selected {
-                background: #20567C;
-                color: white;
-            }
-        """)
-        search_layout.addWidget(self.suggestions_list)
+        # Don't auto-search on every keystroke to avoid performance issues
+        search_container_layout.addWidget(self.search_bar)
+        search_layout.addWidget(search_container)
 
         main_layout.addWidget(search_card)
 
@@ -2244,11 +2747,10 @@ class ModernAnalyzerApp(ModernMainWindow):
         self.tab_buttons = {}
         self.tab_panels = {}
         tab_info = [
-            ("Prequals", "prequals_panel"),
+            ("CMC", "prequals_panel"),  # Use prequals_panel for both CMC and Prequals
             ("Blacklist", "blacklist_panel"),
             ("Goldlist", "goldlist_panel"),
-            ("Mag Glass", "mag_glass_panel"),
-            ("CarSys", "carsys_panel")
+            ("Mag Glass", "mag_glass_panel")
         ]
         tab_row = QHBoxLayout()
         for i, (label, attr) in enumerate(tab_info):
@@ -2268,13 +2770,11 @@ class ModernAnalyzerApp(ModernMainWindow):
         self.blacklist_panel = self.create_blacklist_panel()
         self.goldlist_panel = self.create_goldlist_panel()
         self.mag_glass_panel = self.create_mag_glass_panel()
-        self.carsys_panel = self.create_carsys_panel()
         self.tab_panels = {
             "prequals_panel": self.prequals_panel,
             "blacklist_panel": self.blacklist_panel,
             "goldlist_panel": self.goldlist_panel,
-            "mag_glass_panel": self.mag_glass_panel,
-            "carsys_panel": self.carsys_panel
+            "mag_glass_panel": self.mag_glass_panel
         }
         self.panels_layout = QHBoxLayout()  # Ensure horizontal stacking
         for i, (label, attr) in enumerate(tab_info):
@@ -2311,33 +2811,172 @@ class ModernAnalyzerApp(ModernMainWindow):
         # Update panel content when toggled on
         if checked:
             if attr == "prequals_panel":
-                self.handle_prequal_search(self.make_dropdown.currentText(), self.model_dropdown.currentText(), self.year_dropdown.currentText())
+                self.update_prequals_cmc_display()
             elif attr == "blacklist_panel":
                 self.display_blacklist(self.make_dropdown.currentText())
             elif attr == "goldlist_panel":
                 self.display_goldlist(self.make_dropdown.currentText())
             elif attr == "mag_glass_panel":
                 self.display_mag_glass(self.make_dropdown.currentText())
-            elif attr == "carsys_panel":
-                self.display_carsys_data(self.make_dropdown.currentText())
 
     def create_prequals_panel(self):
         card = ModernCard()
         card_layout = QVBoxLayout(card)
+        
+        # Header with toggle switch
         header_layout = QHBoxLayout()
-        title_label = QLabel("Prequalification Data")
-        title_label.setObjectName("panel_title_label")
-        title_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #20567C;")
-        header_layout.addWidget(title_label)
+        
+        # Create a custom sliding toggle widget
+        class SlidingToggle(QWidget):
+            # Define a signal for position changes
+            position_changed = pyqtSignal(int)
+            
+            def __init__(self, parent=None):
+                super().__init__(parent)
+                self.setFixedSize(140, 30)
+                self.current_position = 0  # 0 for CMC, 1 for Prequals
+                self.animation = QPropertyAnimation(self, b"slider_position")
+                self.animation.setDuration(200)
+                self.animation.setEasingCurve(QEasingCurve.OutCubic)
+                
+            def _get_slider_position(self):
+                return self.current_position
+                
+            def _set_slider_position(self, position):
+                self.current_position = position
+                self.update()
+                
+            slider_position = pyqtProperty(float, _get_slider_position, _set_slider_position)
+            
+            def paintEvent(self, event):
+                painter = QPainter(self)
+                painter.setRenderHint(QPainter.Antialiasing)
+                
+                # Draw background
+                painter.setPen(QPen(QColor("#20567C"), 2))
+                painter.setBrush(QBrush(QColor("#f8f9fa")))
+                painter.drawRoundedRect(self.rect(), 15, 15)
+                
+                # Calculate slider position
+                slider_width = self.width() // 2
+                slider_x = int(self.current_position * slider_width)
+                
+                # Draw sliding highlight
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(QBrush(QColor("#20567C")))
+                painter.drawRoundedRect(slider_x, 2, slider_width, self.height() - 4, 13, 13)
+                
+                # Draw text
+                painter.setPen(QColor("#6c757d"))
+                painter.setFont(QFont("Segoe UI", 10, QFont.Bold))
+                
+                # CMC text
+                cmc_rect = QRectF(0, 0, slider_width, self.height())
+                if self.current_position == 0:
+                    painter.setPen(QColor("white"))
+                painter.drawText(cmc_rect, Qt.AlignCenter, "CMC")
+                
+                # Prequals text
+                prequals_rect = QRectF(slider_width, 0, slider_width, self.height())
+                if self.current_position == 1:
+                    painter.setPen(QColor("white"))
+                else:
+                    painter.setPen(QColor("#6c757d"))
+                painter.drawText(prequals_rect, Qt.AlignCenter, "Prequals")
+            
+            def mousePressEvent(self, event):
+                if event.button() == Qt.LeftButton:
+                    # Determine which half was clicked
+                    if event.x() < self.width() // 2:
+                        self.slide_to(0)
+                    else:
+                        self.slide_to(1)
+            
+            def slide_to(self, position):
+                if position != self.current_position:
+                    self.animation.setStartValue(self.current_position)
+                    self.animation.setEndValue(position)
+                    self.animation.start()
+                    self.current_position = position
+                    # Emit signal
+                    print(f"DEBUG: Emitting position_changed signal with position {position}")
+                    self.position_changed.emit(position)
+        
+        # Create the sliding toggle
+        self.sliding_toggle = SlidingToggle()
+        self.sliding_toggle.current_position = 0  # Start with CMC selected
+        # Connect the signal to the callback
+        self.sliding_toggle.position_changed.connect(self.on_toggle_changed)
+        
+        # Add the toggle to the header
+        header_layout.addWidget(self.sliding_toggle)
         header_layout.addStretch()
+        header_layout.addStretch()
+        
+        # Title label (will be updated based on toggle)
+        self.prequals_cmc_title = QLabel("Manufacturer Chart Data")
+        self.prequals_cmc_title.setObjectName("panel_title_label")
+        self.prequals_cmc_title.setStyleSheet("font-size: 18px; font-weight: bold; color: #20567C;")
+        header_layout.addWidget(self.prequals_cmc_title)
+        header_layout.addStretch()
+        
         expand_button = ModernButton("Expand View", style="secondary")
-        expand_button.clicked.connect(lambda: self.pop_out_panel("Prequals", self.left_panel.toHtml()))
+        expand_button.clicked.connect(self.expand_prequals_cmc_panel)
         header_layout.addWidget(expand_button)
         card_layout.addLayout(header_layout)
+        
         self.left_panel = ModernTextBrowser()
         self.left_panel.setStyleSheet("background: #f8fafc; border-radius: 8px; font-size: 14px; padding: 8px;")
         card_layout.addWidget(self.left_panel)
+        
+        # Initialize with CMC data
+        self.current_data_mode = "CMC"
+        
+        # Set initial display to CMC data
+        self.display_cmc_data("Select Year", "Select Make", "Select Model")
+        
         return card
+
+    def on_toggle_changed(self, position):
+        """Handle sliding toggle position change"""
+        print(f"DEBUG: on_toggle_changed called with position {position}")
+        if position == 0:  # CMC
+            self.current_data_mode = "CMC"
+            self.prequals_cmc_title.setText("Manufacturer Chart Data")
+            # Update the main tab button text
+            if "prequals_panel" in self.tab_buttons:
+                print(f"DEBUG: Setting tab text to CMC")
+                self.tab_buttons["prequals_panel"].setText("CMC")
+        else:  # Prequals
+            self.current_data_mode = "Prequals"
+            self.prequals_cmc_title.setText("Prequalification Data")
+            # Update the main tab button text
+            if "prequals_panel" in self.tab_buttons:
+                print(f"DEBUG: Setting tab text to Prequals")
+                self.tab_buttons["prequals_panel"].setText("Prequals")
+        
+        # Update the display
+        self.update_prequals_cmc_display()
+        
+        # Update tab button styles to reflect the change
+        self.update_tab_button_styles()
+
+    def update_prequals_cmc_display(self):
+        """Update the display based on current toggle state"""
+        if self.current_data_mode == "CMC":
+            self.display_cmc_data(self.year_dropdown.currentText(), self.make_dropdown.currentText(), self.model_dropdown.currentText())
+        else:
+            self.handle_prequal_search(self.make_dropdown.currentText(), self.model_dropdown.currentText(), self.year_dropdown.currentText())
+
+    def expand_prequals_cmc_panel(self):
+        """Expand the current panel content"""
+        title = "Manufacturer Chart Data" if self.current_data_mode == "CMC" else "Prequalification Data"
+        self.pop_out_panel(title, self.left_panel.toHtml())
+
+    def update_tab_button_styles(self):
+        """Update tab button styles after text changes"""
+        for attr, btn in self.tab_buttons.items():
+            btn.setStyleSheet(self.get_tab_button_style(selected=btn.isChecked()))
 
     def create_blacklist_panel(self):
         card = ModernCard()
@@ -2393,23 +3032,9 @@ class ModernAnalyzerApp(ModernMainWindow):
         card_layout.addWidget(self.mag_glass_panel_widget)
         return card
 
-    def create_carsys_panel(self):
-        card = ModernCard()
-        card_layout = QVBoxLayout(card)
-        header_layout = QHBoxLayout()
-        title_label = QLabel("CarSys Data")
-        title_label.setObjectName("panel_title_label")
-        title_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #20567C;")
-        header_layout.addWidget(title_label)
-        header_layout.addStretch()
-        expand_button = ModernButton("Expand View", style="secondary")
-        expand_button.clicked.connect(lambda: self.pop_out_panel("CarSys", self.carsys_panel_widget.toHtml()))
-        header_layout.addWidget(expand_button)
-        card_layout.addLayout(header_layout)
-        self.carsys_panel_widget = ModernTextBrowser()
-        self.carsys_panel_widget.setStyleSheet("background: #f8fafc; border-radius: 8px; font-size: 14px; padding: 8px;")
-        card_layout.addWidget(self.carsys_panel_widget)
-        return card
+
+
+
 
     def create_status_bar(self):
         """Create modern status bar"""
@@ -2460,88 +3085,63 @@ class ModernAnalyzerApp(ModernMainWindow):
         return get_db_connection(self.db_path)
 
     def on_year_selected(self):
+        # Don't update if year is locked
+        if self.year_locked:
+            return
+            
         selected_year = self.year_dropdown.currentText()
-        selected_filter = self.filter_dropdown.currentText()
         current_make = self.make_dropdown.currentText()
+        current_model = self.model_dropdown.currentText()
         
         print(f"[DEBUG] on_year_selected: Year selected: '{selected_year}'")
         print(f"[DEBUG] on_year_selected: Current make: '{current_make}'")
+        print(f"[DEBUG] on_year_selected: Current model: '{current_model}'")
         
-        if selected_year != "Select Year":
-            try:
-                selected_year_int = int(selected_year)
-                valid_prequal_data = []
-                for item in self.data['prequal']:
-                    try:
-                        if (self.has_valid_prequal(item) and 'Year' in item and pd.notna(item['Year'])):
-                            item_year = int(float(item['Year']))
-                            if item_year == selected_year_int:
-                                valid_prequal_data.append(item)
-                    except (ValueError, TypeError, KeyError):
-                        continue
-                
-                print(f"[DEBUG] on_year_selected: Valid data for year {selected_year}: {len(valid_prequal_data)} records")
-                
-                makes = []
-                for item in valid_prequal_data:
-                    try:
-                        if 'Make' in item and item['Make'].strip() and item['Make'].strip().lower() != 'unknown':
-                            makes.append(item['Make'].strip())
-                    except (AttributeError, KeyError):
-                        continue
-                makes = sorted(set(makes))
-                
-                print(f"[DEBUG] on_year_selected: Makes found for year {selected_year}: {makes}")
-                print(f"[DEBUG] on_year_selected: Lexus in makes: {'Lexus' in makes}")
-                print(f"[DEBUG] on_year_selected: Kia in makes: {'Kia' in makes}")
-                
-                self.make_dropdown.clear()
-                self.make_dropdown.addItem("Select Make")
-                self.make_dropdown.addItem("All")
-                self.make_dropdown.addItems(makes)
-                
-                if current_make in makes:
-                    index = self.make_dropdown.findText(current_make)
-                    if index != -1:
-                        self.make_dropdown.setCurrentIndex(index)
-                        print(f"[DEBUG] on_year_selected: Restored current make '{current_make}' at index {index}")
-                
-                self.model_dropdown.clear()
-                self.model_dropdown.addItem("Select Model")
-                updated_make = self.make_dropdown.currentText()
-                
-                print(f"[DEBUG] on_year_selected: Updated make: '{updated_make}'")
-                
-                if updated_make not in ["Select Make", "All"]:
-                    self.update_model_dropdown()
-            except (ValueError, TypeError) as e:
-                import logging
-                logging.error(f"Error updating makes for year {selected_year}: {e}")
-        if selected_filter in ["Prequals", "Gold and Black", "Blacklist", "Goldlist", "Mag Glass", "All"]:
-            self.perform_search()
+        # Update dropdowns to show only available options based on current selections
+        self.update_dropdowns_with_locks()
+        
+        # Update panels
         self.update_visible_panels()
 
     def update_model_dropdown(self):
+        # Don't update if make is locked
+        if self.make_locked:
+            return
+            
         selected_year = self.year_dropdown.currentText().strip()
         selected_make = self.make_dropdown.currentText().strip()
+        current_model = self.model_dropdown.currentText().strip()
         
-        print(f"[DEBUG] update_model_dropdown: Year='{selected_year}', Make='{selected_make}'")
+        print(f"[DEBUG] update_model_dropdown: Year='{selected_year}', Make='{selected_make}', Current Model='{current_model}'")
         
-        self.populate_models(selected_year, selected_make)
-        import logging
-        logging.debug(f"Updated model dropdown for Year: {selected_year}, Make: {selected_make}")
+        # Update dropdowns to show only available options based on current selections
+        self.update_dropdowns_with_locks()
+        
+        # Update panels
         self.update_visible_panels()
 
     def handle_model_change(self, index):
+        # Don't update if model is locked
+        if self.model_locked:
+            return
+            
         selected_model = self.model_dropdown.currentText().strip()
         selected_make = self.make_dropdown.currentText()
         selected_year = self.year_dropdown.currentText()
         
         print(f"[DEBUG] handle_model_change: Model='{selected_model}', Make='{selected_make}', Year='{selected_year}'")
         
+        # Update dropdowns to show only available options based on current selections
+        self.update_dropdowns_with_locks()
+        
+        # Update panels
+        self.update_visible_panels()
+        
         import logging
         logging.debug(f"Model selected: {selected_model}")
-        self.handle_prequal_search(selected_make, selected_model, selected_year)
+        
+        # Update display based on current toggle state
+        self.update_prequals_cmc_display()
 
     def populate_models(self, year_text, make_text):
         self.model_dropdown.clear()
@@ -2587,22 +3187,20 @@ class ModernAnalyzerApp(ModernMainWindow):
             import logging
             logging.error(f"Error in populate_models: {e}")
 
-    def filter_changed(self):
-        """Handle filter dropdown change"""
-        selected_filter = self.filter_dropdown.currentText()
-        if selected_filter != "Select List":
-            self.update_panel_visibility(selected_filter, self.make_dropdown.currentText())
-            self.log_action(self.current_user, f"Selected filter: {selected_filter}")
-
     def clear_filters(self):
         """Clear all filters"""
-        self.year_dropdown.setCurrentIndex(0)
-        self.make_dropdown.setCurrentIndex(0)
-        self.model_dropdown.setCurrentIndex(0)
-        self.filter_dropdown.setCurrentIndex(0)
-        self.search_bar.clear()
-        self.clear_display_panels()
-        self.log_action(self.current_user, "Cleared all filters")
+        # Only clear dropdowns that are not locked
+        if not self.year_locked:
+            self.year_dropdown.setCurrentIndex(0)
+        if not self.make_locked:
+            self.make_dropdown.setCurrentIndex(0)
+        if not self.model_locked:
+            self.model_dropdown.setCurrentIndex(0)
+            self.search_bar.clear()
+            self.clear_display_panels()
+            self.update_visible_panels()  # Update panels after clearing
+            self.log_action(self.current_user, "Cleared all filters")
+            self.log_action(self.current_user, "Cleared all filters")
 
     def toggle_always_on_top(self, checked):
         """Toggle always on top behavior"""
@@ -2613,55 +3211,91 @@ class ModernAnalyzerApp(ModernMainWindow):
             self.setWindowFlags(self.windowFlags() & ~Qt.WindowStaysOnTopHint)
             self.show()
 
-    def update_suggestions(self, text):
-        """Update search suggestions"""
-        if len(text) >= 2:
-            suggestions = self.get_suggestions(text)
-            if suggestions:
-                self.suggestions_list.clear()
-                for suggestion in suggestions[:10]:
-                    self.suggestions_list.addItem(suggestion)
-                self.suggestions_list.show()
+
+
+    def toggle_lock(self, field_type):
+        """Toggle lock state for a field"""
+        if field_type == 'year':
+            self.year_locked = not self.year_locked
+            if self.year_locked:
+                self.locked_year = self.year_dropdown.currentText()
+                self.year_lock_button.setText("🔒")
+                self.year_lock_button.setStyleSheet(self.lock_button_style_locked)
+                self.year_lock_button.setToolTip("Unlock Year selection")
             else:
-                self.suggestions_list.hide()
-        else:
-            self.suggestions_list.hide()
-
-    def get_suggestions(self, text):
-        """Get search suggestions"""
-        suggestions = []
-        text_lower = text.lower()
+                self.locked_year = None
+                self.year_lock_button.setText("🔓")
+                self.year_lock_button.setStyleSheet(self.lock_button_style)
+        elif field_type == 'make':
+            self.make_locked = not self.make_locked
+            if self.make_locked:
+                self.locked_make = self.make_dropdown.currentText()
+                self.make_lock_button.setText("🔒")
+                self.make_lock_button.setStyleSheet(self.lock_button_style_locked)
+                self.make_lock_button.setToolTip("Unlock Make selection")
+            else:
+                self.locked_make = None
+                self.make_lock_button.setText("🔓")
+                self.make_lock_button.setStyleSheet(self.lock_button_style)
+                self.make_lock_button.setToolTip("Lock Make selection")
         
-        # Search in all data sources
-        for data_type, data_list in self.data.items():
-            for item in data_list:
-                if isinstance(item, dict):
-                    for key, value in item.items():
-                        if isinstance(value, str) and text_lower in value.lower():
-                            suggestions.append(f"{value} ({data_type})")
-                elif isinstance(item, str) and text_lower in item.lower():
-                    suggestions.append(f"{item} ({data_type})")
+        elif field_type == 'model':
+            self.model_locked = not self.model_locked
+            if self.model_locked:
+                self.locked_model = self.model_dropdown.currentText()
+                self.model_lock_button.setText("🔒")
+                self.model_lock_button.setStyleSheet(self.lock_button_style_locked)
+                self.model_lock_button.setToolTip("Unlock Model selection")
+            else:
+                self.locked_model = None
+                self.model_lock_button.setText("🔓")
+                self.model_lock_button.setStyleSheet(self.lock_button_style)
+                self.model_lock_button.setToolTip("Lock Model selection")
         
-        return list(set(suggestions))
+        # Update other dropdowns based on locked values
+        self.update_dropdowns_with_locks()
+    def update_dropdowns_with_locks(self):
+        """Update dropdowns while respecting locked values"""
+        # Prevent recursive updates
+        if getattr(self, '_updating_dropdowns', False):
+            return
+        self._updating_dropdowns = True
+        try:
+            # Get current values (use locked values if locked, otherwise use current dropdown text)
+            year_to_use = self.locked_year if self.year_locked else self.year_dropdown.currentText()
+            make_to_use = self.locked_make if self.make_locked else self.make_dropdown.currentText()
+            model_to_use = self.locked_model if self.model_locked else self.model_dropdown.currentText()
+            
+            # Always update dropdowns to show only available options based on current selections
+            # Update years dropdown based on current make and model selections
+            if not self.year_locked:
+                self.update_years_based_on_selections(make_to_use, model_to_use)
+            
+            # Update makes dropdown based on current year and model selections
+            if not self.make_locked:
+                self.update_makes_based_on_selections(year_to_use, model_to_use)
+            
+            # Update models dropdown based on current year and make selections
+            if not self.model_locked:
+                self.update_models_based_on_selections(year_to_use, make_to_use)
+            
+            # Simply disable/enable dropdowns based on lock state
+            self.year_dropdown.setEnabled(not self.year_locked)
+            self.make_dropdown.setEnabled(not self.make_locked)
+            self.model_dropdown.setEnabled(not self.model_locked)
+        finally:
+            self._updating_dropdowns = False
 
-    def on_suggestion_clicked(self):
-        """Handle suggestion selection"""
-        item = self.suggestions_list.currentItem()
-        if item:
-            suggestion_text = item.text().split(" (")[0]
-            self.search_bar.setText(suggestion_text)
-            self.suggestions_list.hide()
-            self.perform_search()
+
 
     def perform_search(self):
         """Perform search based on current filters"""
         dtc_code = self.search_bar.text().strip()
-        selected_filter = self.filter_dropdown.currentText()
         selected_make = self.make_dropdown.currentText()
         selected_model = self.model_dropdown.currentText()
         selected_year = self.year_dropdown.currentText()
         
-        print(f"[DEBUG] Search criteria: Year={selected_year}, Make={selected_make}, Model={selected_model}, Filter={selected_filter}")
+        print(f"[DEBUG] Search criteria: Year={selected_year}, Make={selected_make}, Model={selected_model}, DTC={dtc_code}")
         
         # Print first 3 prequal records loaded
         if hasattr(self, 'data') and 'prequal' in self.data and self.data['prequal']:
@@ -2669,13 +3303,14 @@ class ModernAnalyzerApp(ModernMainWindow):
         else:
             print("[DEBUG] No prequal data loaded.")
         
-        # Trigger search if DTC code is entered OR if Year/Make/Model are selected
-        if dtc_code or (selected_year != "Select Year" and selected_make != "Select Make" and selected_model != "Select Model"):
-            self.update_displays_based_on_filter(selected_filter, dtc_code, selected_make, selected_model, selected_year)
-            if dtc_code:
-                self.log_action(self.current_user, f"Search performed: {dtc_code}")
-            else:
-                self.log_action(self.current_user, f"Search performed: {selected_year} {selected_make} {selected_model}")
+        # Update displays based on visible tabs
+        self.update_displays_based_on_visible_tabs(dtc_code, selected_make, selected_model, selected_year)
+        
+        # Log search actions
+        if dtc_code:
+            self.log_action(self.current_user, f"DTC search performed: {dtc_code}")
+        if selected_year != "Select Year" and selected_make != "Select Make" and selected_model != "Select Model":
+            self.log_action(self.current_user, f"Vehicle search performed: {selected_year} {selected_make} {selected_model}")
 
     def clear_display_panels(self):
         """Clear all display panels"""
@@ -2683,73 +3318,26 @@ class ModernAnalyzerApp(ModernMainWindow):
         self.blacklist_panel_widget.clear()
         self.goldlist_panel_widget.clear()
         self.mag_glass_panel_widget.clear()
-        self.carsys_panel_widget.clear()
 
-    def update_panel_visibility(self, selected_filter, selected_make):
-        """Update which panels are visible based on filter"""
-        # Show/hide tabs based on filter selection
-        if selected_filter == "Prequals":
-            self.prequals_panel.setVisible(True)
-            self.blacklist_panel.setVisible(False)
-            self.goldlist_panel.setVisible(False)
-            self.mag_glass_panel.setVisible(False)
-            self.carsys_panel.setVisible(False)
-        elif selected_filter == "Blacklist":
-            self.prequals_panel.setVisible(False)
-            self.blacklist_panel.setVisible(True)
-            self.goldlist_panel.setVisible(False)
-            self.mag_glass_panel.setVisible(False)
-            self.carsys_panel.setVisible(False)
-        elif selected_filter == "Goldlist":
-            self.prequals_panel.setVisible(False)
-            self.blacklist_panel.setVisible(False)
-            self.goldlist_panel.setVisible(True)
-            self.mag_glass_panel.setVisible(False)
-            self.carsys_panel.setVisible(False)
-        elif selected_filter == "Mag Glass":
-            self.prequals_panel.setVisible(False)
-            self.blacklist_panel.setVisible(False)
-            self.goldlist_panel.setVisible(False)
-            self.mag_glass_panel.setVisible(True)
-            self.carsys_panel.setVisible(False)
-        elif selected_filter == "CarSys":
-            self.prequals_panel.setVisible(False)
-            self.blacklist_panel.setVisible(False)
-            self.goldlist_panel.setVisible(False)
-            self.mag_glass_panel.setVisible(False)
-            self.carsys_panel.setVisible(True)
-        elif selected_filter == "Gold and Black":
-            # Show blacklist tab by default for combined view
-            self.prequals_panel.setVisible(False)
-            self.blacklist_panel.setVisible(True)
-            self.goldlist_panel.setVisible(True)
-            self.mag_glass_panel.setVisible(False)
-            self.carsys_panel.setVisible(False)
 
-    def update_displays_based_on_filter(self, selected_filter, dtc_code, selected_make, selected_model, selected_year):
-        """Update displays based on selected filter"""
-        if selected_filter == "Prequals" or selected_filter == "Select List":
-            # If "Select List" is chosen, default to Prequals
-            self.handle_prequal_search(selected_make, selected_model, selected_year)
-        elif selected_filter == "Mag Glass":
-            self.search_mag_glass(selected_make)
-        elif selected_filter == "CarSys":
-            self.search_carsys_dtc(dtc_code)
-        elif selected_filter == "Blacklist":
-            self.display_blacklist(selected_make)
-        elif selected_filter == "Goldlist":
-            self.display_goldlist(selected_make)
-        elif selected_filter == "Gold and Black":
-            # Display both blacklist and goldlist
-            self.display_blacklist(selected_make)
-            self.display_goldlist(selected_make)
-        elif selected_filter == "All":
-            # Show all data
-            self.handle_prequal_search(selected_make, selected_model, selected_year)
-            self.search_mag_glass(selected_make)
-            self.search_carsys_dtc(dtc_code)
-            self.display_blacklist(selected_make)
-            self.display_goldlist(selected_make)
+
+    def update_displays_based_on_visible_tabs(self, dtc_code, selected_make, selected_model, selected_year):
+        """Update displays based on which tabs are currently visible"""
+        # Check which tabs are visible and update their content accordingly
+        if self.prequals_panel.isVisible():
+            self.update_prequals_cmc_display()
+        if self.blacklist_panel.isVisible():
+            if dtc_code:
+                self.search_blacklist_dtc(dtc_code, selected_make)
+            else:
+                self.display_blacklist(selected_make)
+        if self.goldlist_panel.isVisible():
+            if dtc_code:
+                self.search_goldlist_dtc(dtc_code, selected_make)
+            else:
+                self.display_goldlist(selected_make)
+        if self.mag_glass_panel.isVisible():
+            self.display_mag_glass(selected_make)
 
     def handle_prequal_search(self, selected_make, selected_model, selected_year):
         """Handle prequalification search"""
@@ -2808,91 +3396,230 @@ class ModernAnalyzerApp(ModernMainWindow):
         # Now, pass the unique items to be displayed
         self.display_results(list(unique_results.values()), context='prequal')
 
-    def display_carsys_data(self, selected_make):
-        """Display CarSys data"""
+
+
+    def display_cmc_data(self, selected_year, selected_make, selected_model):
+        """Display Manufacturer Chart data"""
+        conn = None
         try:
+            # Check if year, make, and model are selected
+            if (selected_year == "Select Year" or selected_make == "Select Make" or 
+                selected_model == "Select Model"):
+                self.left_panel.setPlainText("Please select Year, Make, and Model to view Manufacturer Chart data.")
+                return
+            
             conn = self.get_db_connection()
             
             # Check if table exists
             cursor = conn.cursor()
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='carsys'")
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='manufacturer_chart'")
             if not cursor.fetchone():
-                self.carsys_panel_widget.setPlainText("No CarSys data found. Please load data first.")
+                self.left_panel.setPlainText("No Manufacturer Chart data found. Please load data first.")
                 return
             
-            # If no make is selected, display all results
-            if selected_make == "Select Make" or selected_make == "All":
-                query = """
-                SELECT genericSystemName, dtcSys, carMake, comments
-                FROM carsys
-                """
-                df = pd.read_sql_query(query, conn)
-            else:
-                # If a make is selected, filter the results by the selected make (case/whitespace-insensitive)
-                query = """
-                SELECT genericSystemName, dtcSys, carMake, comments
-                FROM carsys
-                WHERE TRIM(UPPER(carMake)) = TRIM(UPPER(?))
-                """
-                df = pd.read_sql_query(query, conn, params=(selected_make,))
+            # Query for manufacturer chart data with year, make, and model filters
+            # First, let's see what columns are actually in the table
+            cursor.execute("PRAGMA table_info(manufacturer_chart)")
+            columns_info = cursor.fetchall()
+            logging.debug(f"Manufacturer chart table columns: {[col[1] for col in columns_info]}")
+            
+            # Get all data first to see what we have
+            query = "SELECT * FROM manufacturer_chart"
+            df = pd.read_sql_query(query, conn)
+            
+            # Debug: Check for Acura data specifically
+            acura_query = "SELECT DISTINCT Make FROM manufacturer_chart WHERE UPPER(Make) LIKE '%ACURA%'"
+            acura_cursor = conn.cursor()
+            acura_cursor.execute(acura_query)
+            acura_makes = acura_cursor.fetchall()
+            logging.debug(f"Acura makes found in database: {acura_makes}")
+            
+            # Check for any data with 'acura' in the make field
+            all_makes_query = "SELECT DISTINCT Make FROM manufacturer_chart WHERE Make IS NOT NULL ORDER BY Make"
+            all_makes_cursor = conn.cursor()
+            all_makes_cursor.execute(all_makes_query)
+            all_makes_in_db = [row[0] for row in all_makes_cursor.fetchall()]
+            logging.debug(f"All makes in database: {all_makes_in_db[:20]}")  # Show first 20
+            
+            logging.debug(f"Total manufacturer chart records: {len(df)}")
+            if not df.empty:
+                logging.debug(f"Sample manufacturer chart data: {df.head()}")
+                logging.debug(f"Available columns: {list(df.columns)}")
+            
+            # Now filter by year, make, and model
+            if not df.empty:
+                # Normalize the search values
+                search_year = str(selected_year).strip().upper()
+                search_make = str(selected_make).strip().upper()
+                search_model = str(selected_model).strip().upper()
+                
+                # Debug: Show what data is available
+                logging.debug(f"Searching for: Year='{search_year}', Make='{search_make}', Model='{search_model}'")
+                
+                # Show sample of available data - handle None values properly
+                unique_years = df['Year'].dropna().unique()
+                unique_makes = df['Make'].dropna().unique()
+                unique_models = df['Model'].dropna().unique()
+                logging.debug(f"Available years: {list(unique_years)[:10]}")  # Show first 10
+                all_makes = sorted([make for make in unique_makes if make is not None])
+                logging.debug(f"Available makes (first 20): {all_makes[:20]}")
+                logging.debug(f"Total unique makes: {len(all_makes)}")
+                # Check specifically for Acura
+                acura_present = 'Acura' in all_makes
+                logging.debug(f"Is 'Acura' in the data: {acura_present}")
+                if acura_present:
+                    acura_data = df[df['Make'].fillna('').str.upper() == 'ACURA']
+                    logging.debug(f"Acura records found: {len(acura_data)}")
+                    if len(acura_data) > 0:
+                        logging.debug(f"Acura years: {acura_data['Year'].dropna().unique().tolist()}")
+                        logging.debug(f"Acura models: {acura_data['Model'].dropna().unique().tolist()}")
+                else:
+                    # Check if there are any variations of Acura
+                    acura_variants = [make for make in all_makes if make and 'acura' in make.lower()]
+                    logging.debug(f"Acura variants found: {acura_variants}")
+                logging.debug(f"Available models: {list(unique_models)[:10]}")  # Show first 10
+                
+                # Filter the dataframe - handle None values properly
+                filtered_df = df[
+                    (df['Year'].fillna('').astype(str).str.strip().str.upper() == search_year) &
+                    (df['Make'].fillna('').astype(str).str.strip().str.upper() == search_make) &
+                    (df['Model'].fillna('').astype(str).str.strip().str.upper() == search_model)
+                ]
+                
+                logging.debug(f"Filtered records for {selected_year} {selected_make} {selected_model}: {len(filtered_df)}")
+                df = filtered_df
             
             # Replace NaN values with empty strings
             df.fillna("", inplace=True)
             
-            # Display the results in the CarSys panel
+            # Display the results in the left panel
             if df.empty:
-                self.carsys_panel_widget.setPlainText(f"No CarSys results found for make: {selected_make}")
+                self.left_panel.setPlainText(f"No Manufacturer Chart data found for {selected_year} {selected_make} {selected_model}")
             else:
-                # Rename columns for display to match the original Excel column names
-                df = df.rename(columns={
-                    'genericSystemName': 'Generic System Name',
-                    'dtcSys': 'DTCsys',
-                    'carMake': 'CarMake',
-                    'comments': 'Comments'
-                })
-                
-                # Add styling to the HTML table
-                html_table = df.to_html(index=False, escape=False, classes='table table-striped')
-                styled_html = f"""
-                <html>
-                <head>
-                <style>
-                .table {{
-                    border-collapse: collapse;
-                    width: 100%;
-                    font-family: Arial, sans-serif;
-                    font-size: 12px;
-                }}
-                .table th {{
-                    background-color: #667eea;
-                    color: white;
-                    padding: 8px;
-                    text-align: left;
-                    border: 1px solid #ddd;
-                }}
-                .table td {{
-                    padding: 6px;
-                    border: 1px solid #ddd;
-                }}
-                .table-striped tr:nth-child(even) {{
-                    background-color: #f8f9fa;
-                }}
-                </style>
-                </head>
-                <body>
-                {html_table}
-                </body>
-                </html>
-                """
-                self.carsys_panel_widget.setHtml(styled_html)
-                self.carsys_panel_widget.setOpenExternalLinks(True)
+                # Format the data similar to prequals display
+                html_content = self.format_cmc_data_for_display(df)
+                self.left_panel.setHtml(html_content)
+                self.left_panel.setOpenExternalLinks(True)
         
         except Exception as e:
-            logging.error(f"Failed to display CarSys data: {e}")
-            self.carsys_panel_widget.setPlainText(f"An error occurred while fetching the CarSys data: {str(e)}")
+            logging.error(f"Failed to display CMC data: {e}")
+            self.left_panel.setPlainText(f"An error occurred while fetching the Manufacturer Chart data: {str(e)}")
         
         finally:
-            conn.close()
+            if conn:
+                conn.close()
+
+    def format_cmc_data_for_display(self, df):
+        """Format CMC data for display similar to prequals format"""
+        html_content = """
+        <html>
+        <head>
+        <style>
+        body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 9px; line-height: 1.4; color: #333; }
+        .record { 
+            background: linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%); 
+            border: 2px solid #667eea; 
+            border-radius: 10px; 
+            padding: 12px; 
+            margin-bottom: 15px; 
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1); 
+            position: relative; 
+            overflow: hidden; 
+        }
+        .record-header {
+            background: #667eea;
+            color: white;
+            padding: 6px 10px;
+            margin: -12px -12px 8px -12px;
+            border-radius: 8px 8px 0 0;
+            font-weight: bold;
+            font-size: 11px;
+        }
+        .field { margin-bottom: 2px; }
+        .field-label { 
+            font-weight: bold; 
+            color: #20567C; 
+            display: inline-block; 
+            width: 180px; 
+            font-size: 9px;
+        }
+        .field-value { color: #333; font-size: 9px; }
+        .service-link { color: #0066cc; text-decoration: none; }
+        .service-link:hover { text-decoration: underline; }
+        </style>
+        </head>
+        <body>
+        """
+        
+        for index, row in df.iterrows():
+            # Get the feature name for the header
+            feature = row.get('Feature', 'Unknown Feature')
+            if pd.isna(feature) or feature == '':
+                feature = 'Unknown Feature'
+            
+            html_content += f"""
+            <div class="record">
+                <div class="record-header">{feature}</div>
+            """
+            
+            # Display all available columns dynamically
+            for col in df.columns:
+                if col.lower() not in ['id', 'created_at']:  # Skip internal columns
+                    value = row.get(col, 'N/A')
+                    if pd.isna(value) or value == '':
+                        value = 'N/A'
+                    
+                    # Handle special cases
+                    if 'hyperlink' in col.lower() or 'link' in col.lower():
+                        if value and value != 'N/A' and value.startswith(('http://', 'https://')):
+                            html_content += f"""
+                <div class="field">
+                    <span class="field-label">{col.replace('_', ' ').title()}:</span>
+                    <span class="field-value"><a href="{value}" class="service-link" target="_blank">View Service Information</a></span>
+                </div>
+                            """
+                        else:
+                            html_content += f"""
+                <div class="field">
+                    <span class="field-label">{col.replace('_', ' ').title()}:</span>
+                    <span class="field-value">N/A</span>
+                </div>
+                            """
+                    elif 'prerequisites' in col.lower() or 'requirements' in col.lower():
+                        if value and value != 'N/A':
+                            # Convert line breaks to HTML breaks
+                            value = str(value).replace('\n', '<br>')
+                            html_content += f"""
+                <div class="field">
+                    <span class="field-label">{col.replace('_', ' ').title()}:</span>
+                    <span class="field-value">{value}</span>
+                </div>
+                            """
+                        else:
+                            html_content += f"""
+                <div class="field">
+                    <span class="field-label">{col.replace('_', ' ').title()}:</span>
+                    <span class="field-value">N/A</span>
+                </div>
+                            """
+                    else:
+                        html_content += f"""
+                <div class="field">
+                    <span class="field-label">{col.replace('_', ' ').title()}:</span>
+                    <span class="field-value">{value}</span>
+                </div>
+                        """
+            
+            html_content += """
+            </div>
+            """
+        
+        html_content += """
+        </body>
+        </html>
+        """
+        
+        return html_content
 
     def display_mag_glass(self, selected_make):
         """Display Mag Glass data"""
@@ -2967,63 +3694,7 @@ class ModernAnalyzerApp(ModernMainWindow):
             if conn:
                 conn.close()
 
-    def search_carsys_dtc(self, dtc_code):
-        """Search CarSys DTC codes"""
-        conn = self.get_db_connection()
 
-        # Modify query to filter by DTCsys and optionally by carMake
-        if dtc_code:
-            if self.make_dropdown.currentText() not in ["Select Make", "All"]:
-                query = f"""
-                SELECT genericSystemName, dtcSys, carMake, comments
-                FROM carsys
-                WHERE dtcSys LIKE '%{dtc_code}%' AND carMake = ?
-                """
-                params = (self.make_dropdown.currentText(),)
-            else:
-                query = f"""
-                SELECT genericSystemName, dtcSys, carMake, comments
-                FROM carsys
-                WHERE dtcSys LIKE '%{dtc_code}%'
-                """
-                params = None
-        else:
-            # If no DTC code is entered, show all results
-            query = """
-            SELECT genericSystemName, dtcSys, carMake, comments
-            FROM carsys
-            """
-            params = None
-
-        try:
-            if params:
-                df = pd.read_sql_query(query, conn, params=params)
-            else:
-                df = pd.read_sql_query(query, conn)
-            
-            # Replace NaN values with empty strings
-            df.fillna("", inplace=True)
-
-            if df.empty:
-                self.carsys_panel_widget.setPlainText("No results found for the given criteria.")
-            else:
-                # Rename columns for display to match the original Excel column names
-                df = df.rename(columns={
-                    'genericSystemName': 'Generic System Name',
-                    'dtcSys': 'DTCsys',
-                    'carMake': 'CarMake',
-                    'comments': 'Comments'
-                })
-                
-                self.carsys_panel_widget.setHtml(df.to_html(index=False, escape=False))
-                self.carsys_panel_widget.setOpenExternalLinks(True)
-        
-        except Exception as e:
-            logging.error(f"Failed to execute CarSys search query: {query}\nError: {e}")
-            self.carsys_panel_widget.setPlainText("An error occurred while fetching the CarSys data.")
-        
-        finally:
-            conn.close()
 
     def search_mag_glass(self, selected_make):
         """Search Mag Glass data"""
@@ -3215,11 +3886,62 @@ class ModernAnalyzerApp(ModernMainWindow):
         """
         
         return html
+    
+    def format_side_by_side_data(self, data, data_type):
+        """Format data for side-by-side display"""
+        if not data:
+            return '<span class="no-data">No data</span>'
+        
+        html = ""
+        
+        if data_type == 'prequal':
+            for i, item in enumerate(data):
+                html += f"""
+                    <div style="margin-bottom: 15px; padding: 12px; background: #fff; border-radius: 6px; border-left: 4px solid #1976d2;">
+                        <strong style="color: #1976d2;">Record {i+1}</strong><br/>
+                        <strong>Component:</strong> {item.get('Parent Component', 'N/A')}<br/>
+                        <strong>System:</strong> {item.get('Protech Generic System Name', 'N/A')}<br/>
+                        <strong>Calibration Type:</strong> {item.get('Calibration Type', 'N/A')}<br/>
+                        <strong>Prerequisites:</strong> {item.get('Calibration Pre-Requisites (Short Hand)', 'N/A')}<br/>
+                        <strong>Point of Impact:</strong> {item.get('Point of Impact #', 'N/A')}
+                    </div>
+                """
+        elif data_type in ['blacklist', 'goldlist']:
+            for i, item in enumerate(data):
+                html += f"""
+                    <div style="margin-bottom: 15px; padding: 12px; background: #fff; border-radius: 6px; border-left: 4px solid #1976d2;">
+                        <strong style="color: #1976d2;">Record {i+1}</strong><br/>
+                        <strong>DTC Code:</strong> {item.get('dtcCode', 'N/A')}<br/>
+                        <strong>Description:</strong> {item.get('dtcDescription', 'N/A')}<br/>
+                        <strong>Make:</strong> {item.get('carMake', 'N/A')}
+                    </div>
+                """
+        elif data_type == 'mag_glass':
+            for i, item in enumerate(data):
+                html += f"""
+                    <div style="margin-bottom: 15px; padding: 12px; background: #fff; border-radius: 6px; border-left: 4px solid #1976d2;">
+                        <strong style="color: #1976d2;">Record {i+1}</strong><br/>
+                        <strong>Make:</strong> {item.get('Make', 'N/A')}<br/>
+                        <strong>Model:</strong> {item.get('Model', 'N/A')}<br/>
+                        <strong>Year:</strong> {item.get('Year', 'N/A')}
+                    </div>
+                """
+        elif data_type == 'carsys':
+            for i, item in enumerate(data):
+                html += f"""
+                    <div style="margin-bottom: 15px; padding: 12px; background: #fff; border-radius: 6px; border-left: 4px solid #1976d2;">
+                        <strong style="color: #1976d2;">Record {i+1}</strong><br/>
+                        <strong>Make:</strong> {item.get('Make', 'N/A')}<br/>
+                        <strong>Model:</strong> {item.get('Model', 'N/A')}<br/>
+                        <strong>System:</strong> {item.get('System', 'N/A')}
+        </div>
+        """
+        
+        return html
 
     def clear_search_bar(self):
         """Clear search bar"""
         self.search_bar.clear()
-        self.suggestions_list.hide()
 
     def change_opacity(self, value):
         """Change window opacity"""
@@ -3228,6 +3950,11 @@ class ModernAnalyzerApp(ModernMainWindow):
     def open_admin(self):
         """Open admin panel"""
         dialog = ManageDataListsDialog(self)
+        dialog.exec_()
+    
+    def open_compare_dialog(self):
+        """Open multi-vehicle comparison dialog"""
+        dialog = MultiVehicleCompareDialog(self)
         dialog.exec_()
         
     def manage_paths(self):
@@ -3624,21 +4351,22 @@ class ModernAnalyzerApp(ModernMainWindow):
     def load_configurations(self):
         """Load configurations from database"""
         logging.debug("Loading configurations...")
-        print(f"[DEBUG] load_configurations: Starting to load configurations...")
         
-        for config_type in ['blacklist', 'goldlist', 'prequal', 'mag_glass', 'carsys']:
+        # Load prequal data using the new database utilities
+        prequal_data = get_prequal_data(self.db_path)
+        self.data['prequal'] = prequal_data if prequal_data else []
+        logging.debug(f"Loaded {len(self.data['prequal'])} items for prequal")
+        
+        # Load other data types
+        for config_type in ['blacklist', 'goldlist', 'mag_glass', 'carsys']:
             data = load_configuration(config_type, self.db_path)
             self.data[config_type] = data if data else []
-            print(f"[DEBUG] load_configurations: Loaded {len(data)} items for {config_type}")
             logging.debug(f"Loaded {len(data)} items for {config_type}")
         
-        print(f"[DEBUG] load_configurations: Total prequal data loaded: {len(self.data['prequal'])}")
-        
-        if 'prequal' in self.data:
-            print(f"[DEBUG] load_configurations: Calling populate_dropdowns...")
+        if self.data['prequal']:
             self.populate_dropdowns()
         else:
-            print(f"[DEBUG] load_configurations: WARNING - No prequal data found!")
+            logging.warning("No prequal data found!")
 
     def check_data_loaded(self):
         """Check if data is loaded"""
@@ -3864,6 +4592,7 @@ class ModernAnalyzerApp(ModernMainWindow):
                 cursor.execute("DROP TABLE IF EXISTS goldlist")
                 cursor.execute("DROP TABLE IF EXISTS prequal")
                 cursor.execute("DROP TABLE IF EXISTS mag_glass")
+                cursor.execute("DROP TABLE IF EXISTS manufacturer_chart")
                 initialize_db(self.db_path)
                 logging.info("Database reset complete.")
             conn.commit()
@@ -3876,7 +4605,7 @@ class ModernAnalyzerApp(ModernMainWindow):
         self.log_action(self.current_user, "Clicked Refresh Lists button")
         any_data_loaded = False
         last_processed_path = ""
-        for config_type in ['blacklist', 'goldlist', 'prequal', 'mag_glass', 'CarSys']:
+        for config_type in ['blacklist', 'goldlist', 'prequal', 'mag_glass', 'CarSys', 'manufacturer_chart']:
             folder_path = load_path_from_db(config_type, self.db_path)
             if not folder_path and config_type in ['mag_glass', 'CarSys']:
                 folder_path = load_path_from_db('goldlist', self.db_path)
@@ -3911,6 +4640,10 @@ class ModernAnalyzerApp(ModernMainWindow):
                             result = load_excel_data_to_db(filepath, config_type, db_path=self.db_path, sheet_index=0)
                             if result == "Data loaded successfully":
                                 data_loaded = True
+                        elif config_type == 'manufacturer_chart':
+                            # For manufacturer chart, we need to load ALL files in the directory
+                            # This is different from other data types that process one file at a time
+                            continue  # Skip individual file processing - we'll handle all files at once
                         else:
                             import pandas as pd
                             df = pd.read_excel(filepath)
@@ -3940,12 +4673,166 @@ class ModernAnalyzerApp(ModernMainWindow):
             else:
                 import logging
                 logging.warning(f"No saved path found for {config_type}")
+        
+        # Special handling for manufacturer_chart - load ALL files in the directory
+        manufacturer_chart_path = load_path_from_db('manufacturer_chart', self.db_path)
+        if manufacturer_chart_path:
+            try:
+                logging.info("Loading all manufacturer chart files...")
+                
+                # Clear existing manufacturer chart data
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM manufacturer_chart")
+                conn.commit()
+                conn.close()
+                logging.info("Cleared existing manufacturer chart data")
+                
+                # Get all Excel files in the directory
+                files = self.get_valid_excel_files(manufacturer_chart_path)
+                if files:
+                    files_loaded = 0
+                    for filename, filepath in files.items():
+                        try:
+                            logging.info(f"Processing manufacturer chart file: {filename}")
+                            # Check if this might be an Acura file
+                            if 'acura' in filename.lower():
+                                logging.info(f"Found potential Acura file: {filename}")
+                            result = load_excel_data_to_db(filepath, 'manufacturer_chart', db_path=self.db_path, sheet_index=0)
+                            if result == "Data loaded successfully":
+                                files_loaded += 1
+                                logging.info(f"Loaded manufacturer chart data from: {filename}")
+                            else:
+                                logging.warning(f"Failed to load data from {filename}: {result}")
+                        except Exception as e:
+                            logging.error(f"Error loading manufacturer chart from {filename}: {str(e)}")
+                    
+                    if files_loaded > 0:
+                        any_data_loaded = True
+                        logging.info(f"Successfully loaded manufacturer chart data from {files_loaded} files")
+                else:
+                    logging.warning("No Excel files found in manufacturer chart directory")
+                    
+            except Exception as e:
+                logging.error(f"Error loading manufacturer chart data: {str(e)}")
+        
         if any_data_loaded:
             msg = self.create_styled_messagebox("Success", "All data refreshed successfully!", QMessageBox.Information)
             msg.exec_()
         # Always repopulate dropdowns and check enabled state after refresh
         self.populate_dropdowns()
         self.check_data_loaded()
+
+    def load_manufacturer_chart_data(self, filepath, db_path):
+        """Load manufacturer chart data from Excel file with specified columns"""
+        try:
+            # Read Excel file
+            df = pd.read_excel(filepath)
+            
+            if df.empty:
+                return "No data found in file"
+            
+            # Normalize column names (case-insensitive, remove special characters)
+            df.columns = [normalize_col(col) for col in df.columns]
+            
+            # Define expected column names (normalized)
+            expected_columns = [
+                'year', 'make', 'model', 'calibrationtype', 'protechgenericsystemname',
+                'smegenericsystemname', 'smecalibrationtype', 'feature', 
+                'serviceinformationhyperlink', 'calibrationprerequisites'
+            ]
+            
+            # Check if required columns exist (with variations)
+            missing_columns = []
+            for expected_col in expected_columns:
+                if not any(expected_col in col.lower() for col in df.columns):
+                    missing_columns.append(expected_col)
+            
+            if missing_columns:
+                logging.warning(f"Missing columns in manufacturer chart: {missing_columns}")
+                # Continue with available columns
+            
+            # Create table if it doesn't exist
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            
+            # Create manufacturer_chart table with all possible columns
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS manufacturer_chart (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    Year TEXT,
+                    Make TEXT,
+                    Model TEXT,
+                    Calibration_Type TEXT,
+                    Protech_Generic_System_Name TEXT,
+                    SME_Generic_System_Name TEXT,
+                    SME_Calibration_Type TEXT,
+                    Feature TEXT,
+                    Service_Information_Hyperlink TEXT,
+                    Calibration_Pre_Requisites TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # Clear existing data
+            cursor.execute("DELETE FROM manufacturer_chart")
+            
+            # Map normalized columns to database columns
+            column_mapping = {
+                'year': 'Year',
+                'make': 'Make', 
+                'model': 'Model',
+                'calibrationtype': 'Calibration_Type',
+                'protechgenericsystemname': 'Protech_Generic_System_Name',
+                'smegenericsystemname': 'SME_Generic_System_Name',
+                'smecalibrationtype': 'SME_Calibration_Type',
+                'feature': 'Feature',
+                'serviceinformationhyperlink': 'Service_Information_Hyperlink',
+                'calibrationprerequisites': 'Calibration_Pre_Requisites'
+            }
+            
+            # Prepare data for insertion
+            records = []
+            for _, row in df.iterrows():
+                record = {}
+                for normalized_col, db_col in column_mapping.items():
+                    # Find matching column in dataframe
+                    matching_col = None
+                    for col in df.columns:
+                        if normalized_col in col.lower():
+                            matching_col = col
+                            break
+                    
+                    if matching_col and matching_col in row:
+                        value = row[matching_col]
+                        if pd.isna(value):
+                            record[db_col] = None
+                        else:
+                            record[db_col] = str(value)
+                    else:
+                        record[db_col] = None
+                
+                records.append(record)
+            
+            # Insert data
+            if records:
+                placeholders = ', '.join(['?' for _ in column_mapping.values()])
+                columns = ', '.join(column_mapping.values())
+                cursor.executemany(
+                    f"INSERT INTO manufacturer_chart ({columns}) VALUES ({placeholders})",
+                    [tuple(record.values()) for record in records]
+                )
+                
+                conn.commit()
+                conn.close()
+                return "Data loaded successfully"
+            else:
+                conn.close()
+                return "No valid records found"
+                
+        except Exception as e:
+            logging.error(f"Error loading manufacturer chart data: {str(e)}")
+            return f"Error: {str(e)}"
 
     def load_configurations(self):
         import logging
@@ -3974,55 +4861,276 @@ class ModernAnalyzerApp(ModernMainWindow):
             self.year_dropdown.setDisabled(False)
 
     def populate_dropdowns(self):
-        # Direct port of original Analyzer+ logic
-        valid_prequal_data = [item for item in self.data['prequal'] if self.has_valid_prequal(item)]
+        """Populate dropdowns with data"""
+        if not self.data['prequal']:
+            return
+            
+        # Get unique years and makes
+        years = get_unique_years(self.data['prequal'])
+        makes = get_unique_makes(self.data['prequal'])
         
-        print(f"[DEBUG] populate_dropdowns: Total prequal data: {len(self.data['prequal'])}")
-        print(f"[DEBUG] populate_dropdowns: Valid prequal data: {len(valid_prequal_data)}")
-
-        years = []
-        for item in valid_prequal_data:
-            try:
-                if 'Year' in item and pd.notna(item['Year']):
-                    year = int(float(item['Year']))
-                    years.append(year)
-            except (ValueError, TypeError):
-                continue
-        unique_years = sorted(set(years), reverse=True)
+        logging.debug(f"Found years: {years}")
+        logging.debug(f"Found makes: {makes}")
+        
+        # Clear and populate year dropdown
         self.year_dropdown.clear()
         self.year_dropdown.addItem("Select Year")
-        self.year_dropdown.addItems([str(year) for year in unique_years])
-        
+        for year in years:
+            self.year_dropdown.addItem(year)
+            
+        # Clear and populate make dropdown
         self.make_dropdown.clear()
         self.make_dropdown.addItem("Select Make")
-        self.make_dropdown.addItem("All")
+        self.make_dropdown.addItem("All")  # Keep the "All" option
+        for make in makes:
+            self.make_dropdown.addItem(make)
+            
+        # Clear model dropdown
         self.model_dropdown.clear()
         self.model_dropdown.addItem("Select Model")
-        
-        makes = set()
-        for item in valid_prequal_data:
-            try:
-                if 'Make' in item and item['Make'] and isinstance(item['Make'], str):
-                    make = item['Make'].strip()
-                    if make and make.lower() != 'unknown':
-                        makes.add(make)
-            except (AttributeError, KeyError):
-                continue
-        if '' in makes:
-            makes.remove('')
-        
-        sorted_makes = sorted(makes)
-        self.make_dropdown.addItems(sorted_makes)
-        
-        print(f"[DEBUG] populate_dropdowns: Makes populated: {sorted_makes}")
-        print(f"[DEBUG] populate_dropdowns: Lexus in makes: {'Lexus' in sorted_makes}")
-        print(f"[DEBUG] populate_dropdowns: Kia in makes: {'Kia' in sorted_makes}")
-        
-        logging.debug(f"Makes populated: {sorted_makes}")
 
     def has_valid_prequal(self, item):
-        # Match original app logic - only check Calibration Pre-Requisites
-        return item.get('Calibration Pre-Requisites') not in [None, 'N/A']
+        """Check if an item has valid prequal data"""
+        if not isinstance(item, dict):
+            return False
+            
+        # Check required fields
+        required_fields = ['Year', 'Make', 'Model']
+        for field in required_fields:
+            if field not in item or not item[field] or str(item[field]).lower() == 'nan':
+                return False
+                
+        # Check if year is valid
+        try:
+            year = int(float(item['Year']))
+            if year < 1900 or year > 2100:  # Reasonable year range
+                return False
+        except (ValueError, TypeError):
+            return False
+            
+        # Check if make and model are valid strings
+        if not isinstance(item['Make'], str) or not item['Make'].strip():
+            return False
+        if not isinstance(item['Model'], str) or not item['Model'].strip():
+            return False
+            
+        # Check if make is not unknown
+        if item['Make'].lower() in ['unknown', 'nan']:
+            return False
+            
+        return True
+
+    def search_blacklist_dtc(self, dtc_code, selected_make):
+        """Search blacklist DTC codes"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Check if table exists
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='blacklist'")
+            if not cursor.fetchone():
+                self.blacklist_panel_widget.setPlainText("No blacklist data found. Please load data first.")
+                return
+            
+            # Query blacklist data with DTC code search
+            if selected_make == "All":
+                query = f"""
+                SELECT 'blacklist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments FROM blacklist
+                WHERE dtcCode LIKE '%{dtc_code}%' OR dtcDescription LIKE '%{dtc_code}%'
+                """
+            else:
+                query = f"""
+                SELECT 'blacklist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments FROM blacklist
+                WHERE (dtcCode LIKE '%{dtc_code}%' OR dtcDescription LIKE '%{dtc_code}%') AND carMake = '{selected_make}'
+                """
+            
+            df = pd.read_sql_query(query, conn)
+            if not df.empty:
+                html_table = df.to_html(index=False, escape=False, classes='table table-striped')
+                if getattr(self, 'current_theme', 'Light') == 'Dark':
+                    styled_html = f"""
+                    <html>
+                    <head>
+                    <style>
+                    .table {{
+                        border-collapse: collapse;
+                        width: 100%;
+                        font-family: Arial, sans-serif;
+                        font-size: 12px;
+                        background: #23262f;
+                        color: #f1f1f1;
+                    }}
+                    .table th {{
+                        background-color: #dc3545;
+                        color: #fff;
+                        padding: 8px;
+                        text-align: left;
+                        border: 1px solid #444;
+                    }}
+                    .table td {{
+                        padding: 6px;
+                        border: 1px solid #444;
+                        color: #f1f1f1;
+                        background: #23262f;
+                    }}
+                    .table-striped tr:nth-child(even) {{
+                        background-color: #2d2f3a;
+                    }}
+                    </style>
+                    </head>
+                    <body>
+                    {html_table}
+                    </body>
+                    </html>
+                    """
+                else:
+                    styled_html = f"""
+                    <html>
+                    <head>
+                    <style>
+                    .table {{
+                        border-collapse: collapse;
+                        width: 100%;
+                        font-family: Arial, sans-serif;
+                        font-size: 12px;
+                    }}
+                    .table th {{
+                        background-color: #dc3545;
+                        color: white;
+                        padding: 8px;
+                        text-align: left;
+                        border: 1px solid #ddd;
+                    }}
+                    .table td {{
+                        padding: 6px;
+                        border: 1px solid #ddd;
+                    }}
+                    .table-striped tr:nth-child(even) {{
+                        background-color: #f8f9fa;
+                    }}
+                    </style>
+                    </head>
+                    <body>
+                    {html_table}
+                    </body>
+                    </html>
+                    """
+                self.blacklist_panel_widget.setHtml(styled_html)
+                self.blacklist_panel_widget.setOpenExternalLinks(True)
+            else:
+                self.blacklist_panel_widget.setPlainText(f"No blacklist results found for DTC code: {dtc_code}")
+        except Exception as e:
+            logging.error(f"Failed to execute blacklist search query: {query}\nError: {e}")
+            self.blacklist_panel_widget.setPlainText(f"An error occurred while searching blacklist data: {str(e)}")
+        finally:
+            if conn:
+                conn.close()
+
+    def search_goldlist_dtc(self, dtc_code, selected_make):
+        """Search goldlist DTC codes"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Check if table exists
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='goldlist'")
+            if not cursor.fetchone():
+                self.goldlist_panel_widget.setPlainText("No goldlist data found. Please load data first.")
+                return
+            
+            # Query goldlist data with DTC code search
+            if selected_make == "All":
+                query = f"""
+                SELECT 'goldlist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments FROM goldlist
+                WHERE dtcCode LIKE '%{dtc_code}%' OR dtcDescription LIKE '%{dtc_code}%'
+                """
+            else:
+                query = f"""
+                SELECT 'goldlist' as Source, dtcCode, genericSystemName, dtcDescription, dtcSys, carMake, comments FROM goldlist
+                WHERE (dtcCode LIKE '%{dtc_code}%' OR dtcDescription LIKE '%{dtc_code}%') AND carMake = '{selected_make}'
+                """
+            
+            df = pd.read_sql_query(query, conn)
+            if not df.empty:
+                html_table = df.to_html(index=False, escape=False, classes='table table-striped')
+                if getattr(self, 'current_theme', 'Light') == 'Dark':
+                    styled_html = f"""
+                    <html>
+                    <head>
+                    <style>
+                    .table {{
+                        border-collapse: collapse;
+                        width: 100%;
+                        font-family: Arial, sans-serif;
+                        font-size: 12px;
+                        background: #23262f;
+                        color: #f1f1f1;
+                    }}
+                    .table th {{
+                        background-color: #ffc107;
+                        color: #23262f;
+                        padding: 8px;
+                        text-align: left;
+                        border: 1px solid #444;
+                    }}
+                    .table td {{
+                        padding: 6px;
+                        border: 1px solid #444;
+                        color: #f1f1f1;
+                        background: #23262f;
+                    }}
+                    .table-striped tr:nth-child(even) {{
+                        background-color: #2d2f3a;
+                    }}
+                    </style>
+                    </head>
+                    <body>
+                    {html_table}
+                    </body>
+                    </html>
+                    """
+                else:
+                    styled_html = f"""
+                    <html>
+                    <head>
+                    <style>
+                    .table {{
+                        border-collapse: collapse;
+                        width: 100%;
+                        font-family: Arial, sans-serif;
+                        font-size: 12px;
+                    }}
+                    .table th {{
+                        background-color: #ffc107;
+                        color: black;
+                        padding: 8px;
+                        text-align: left;
+                        border: 1px solid #ddd;
+                    }}
+                    .table td {{
+                        padding: 6px;
+                        border: 1px solid #ddd;
+                    }}
+                    .table-striped tr:nth-child(even) {{
+                        background-color: #f8f9fa;
+                    }}
+                    </style>
+                    </head>
+                    <body>
+                    {html_table}
+                    </body>
+                    </html>
+                    """
+                self.goldlist_panel_widget.setHtml(styled_html)
+                self.goldlist_panel_widget.setOpenExternalLinks(True)
+            else:
+                self.goldlist_panel_widget.setPlainText(f"No goldlist results found for DTC code: {dtc_code}")
+        except Exception as e:
+            logging.error(f"Failed to execute goldlist search query: {query}\nError: {e}")
+            self.goldlist_panel_widget.setPlainText(f"An error occurred while searching goldlist data: {str(e)}")
+        finally:
+            if conn:
+                conn.close()
 
     def display_blacklist(self, selected_make):
         """Display blacklist data"""
@@ -4340,126 +5448,7 @@ class ModernAnalyzerApp(ModernMainWindow):
             if conn:
                 conn.close()
 
-    def display_carsys_data(self, selected_make):
-        """Display CarSys data"""
-        try:
-            conn = self.get_db_connection()
-            
-            # Check if table exists
-            cursor = conn.cursor()
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='carsys'")
-            if not cursor.fetchone():
-                self.carsys_panel_widget.setPlainText("No CarSys data found. Please load data first.")
-                return
-            
-            # If no make is selected, display all results
-            if selected_make == "Select Make" or selected_make == "All":
-                query = """
-                SELECT genericSystemName, dtcSys, carMake, comments
-                FROM carsys
-                """
-                df = pd.read_sql_query(query, conn)
-            else:
-                # If a make is selected, filter the results by the selected make (case/whitespace-insensitive)
-                query = """
-                SELECT genericSystemName, dtcSys, carMake, comments
-                FROM carsys
-                WHERE TRIM(UPPER(carMake)) = TRIM(UPPER(?))
-                """
-                df = pd.read_sql_query(query, conn, params=(selected_make,))
-            
-            # Replace NaN values with empty strings
-            df.fillna("", inplace=True)
-            
-            # Display the results in the CarSys panel
-            if df.empty:
-                self.carsys_panel_widget.setPlainText(f"No CarSys results found for make: {selected_make}")
-            else:
-                # Rename columns for display to match the original Excel column names
-                df = df.rename(columns={
-                    'genericSystemName': 'Generic System Name',
-                    'dtcSys': 'DTCsys',
-                    'carMake': 'CarMake',
-                    'comments': 'Comments'
-                })
-                html_table = df.to_html(index=False, escape=False, classes='table table-striped')
-                if getattr(self, 'current_theme', 'Light') == 'Dark':
-                    styled_html = f"""
-                    <html>
-                    <head>
-                    <style>
-                    .table {{
-                        border-collapse: collapse;
-                        width: 100%;
-                        font-family: Arial, sans-serif;
-                        font-size: 12px;
-                        background: #23262f;
-                        color: #f1f1f1;
-                    }}
-                    .table th {{
-                        background-color: #4f8cff;
-                        color: #fff;
-                        padding: 8px;
-                        text-align: left;
-                        border: 1px solid #444;
-                    }}
-                    .table td {{
-                        padding: 6px;
-                        border: 1px solid #444;
-                        color: #f1f1f1;
-                        background: #23262f;
-                    }}
-                    .table-striped tr:nth-child(even) {{
-                        background-color: #2d2f3a;
-                    }}
-                    </style>
-                    </head>
-                    <body>
-                    {html_table}
-                    </body>
-                    </html>
-                    """
-                else:
-                    styled_html = f"""
-                    <html>
-                    <head>
-                    <style>
-                    .table {{
-                        border-collapse: collapse;
-                        width: 100%;
-                        font-family: Arial, sans-serif;
-                        font-size: 12px;
-                    }}
-                    .table th {{
-                        background-color: #667eea;
-                        color: white;
-                        padding: 8px;
-                        text-align: left;
-                        border: 1px solid #ddd;
-                    }}
-                    .table td {{
-                        padding: 6px;
-                        border: 1px solid #ddd;
-                    }}
-                    .table-striped tr:nth-child(even) {{
-                        background-color: #f8f9fa;
-                    }}
-                    </style>
-                    </head>
-                    <body>
-                    {html_table}
-                    </body>
-                    </html>
-                    """
-                self.carsys_panel_widget.setHtml(styled_html)
-                self.carsys_panel_widget.setOpenExternalLinks(True)
-        
-        except Exception as e:
-            logging.error(f"Failed to display CarSys data: {e}")
-            self.carsys_panel_widget.setPlainText(f"An error occurred while fetching the CarSys data: {str(e)}")
-        
-        finally:
-            conn.close()
+
 
     def on_tab_changed(self, index):
         selected_make = self.make_dropdown.currentText()
@@ -4507,70 +5496,1278 @@ class ModernAnalyzerApp(ModernMainWindow):
                 self.display_carsys_data(selected_make)
 
     def update_visible_panels(self):
+        dtc_code = self.search_bar.text().strip()
         for attr, btn in self.tab_buttons.items():
             if btn.isChecked():
                 if attr == "prequals_panel":
-                    self.handle_prequal_search(self.make_dropdown.currentText(), self.model_dropdown.currentText(), self.year_dropdown.currentText())
+                    # Update display based on current toggle state
+                    self.update_prequals_cmc_display()
                 elif attr == "blacklist_panel":
-                    self.display_blacklist(self.make_dropdown.currentText())
+                    if dtc_code:
+                        self.search_blacklist_dtc(dtc_code, self.make_dropdown.currentText())
+                    else:
+                        self.display_blacklist(self.make_dropdown.currentText())
                 elif attr == "goldlist_panel":
-                    self.display_goldlist(self.make_dropdown.currentText())
+                    if dtc_code:
+                        self.search_goldlist_dtc(dtc_code, self.make_dropdown.currentText())
+                    else:
+                        self.display_goldlist(self.make_dropdown.currentText())
                 elif attr == "mag_glass_panel":
                     self.display_mag_glass(self.make_dropdown.currentText())
-                elif attr == "carsys_panel":
-                    self.display_carsys_data(self.make_dropdown.currentText())
+                elif attr == "cmc_panel":
+                    self.display_cmc_data(self.year_dropdown.currentText(), self.make_dropdown.currentText(), self.model_dropdown.currentText())
 
-    def update_model_dropdown(self):
-        selected_year = self.year_dropdown.currentText().strip()
-        selected_make = self.make_dropdown.currentText().strip()
-        self.populate_models(selected_year, selected_make)
-        import logging
-        logging.debug(f"Updated model dropdown for Year: {selected_year}, Make: {selected_make}")
-        self.update_visible_panels()
+    def update_years_for_locked_model(self, locked_model):
+        """Update year dropdown to only years that contain the locked model."""
+        try:
+            valid_years = set()
+            for item in self.data['prequal']:
+                try:
+                    if (self.has_valid_prequal(item) and 'Model' in item and 'Year' in item and 
+                        pd.notna(item.get('Year')) and str(item.get('Model', '')).strip() == str(locked_model).strip()):
+                        valid_years.add(int(float(item['Year'])))
+                except (ValueError, TypeError, KeyError):
+                    continue
+            valid_years = sorted(valid_years, reverse=True)
 
-    def on_year_selected(self):
-        selected_year = self.year_dropdown.currentText()
-        selected_filter = self.filter_dropdown.currentText()
-        current_make = self.make_dropdown.currentText()
-        if selected_year != "Select Year":
-            try:
-                selected_year_int = int(selected_year)
-                valid_prequal_data = []
-                for item in self.data['prequal']:
+            # Only rebuild if year isn't locked
+            if not self.year_locked:
+                current_year = self.year_dropdown.currentText()
+                self.year_dropdown.blockSignals(True)
+                self.year_dropdown.clear()
+                self.year_dropdown.addItem("Select Year")
+                self.year_dropdown.addItems([str(y) for y in valid_years])
+                self.year_dropdown.blockSignals(False)
+                
+                # Restore selection if still present
+                if current_year in [str(y) for y in valid_years]:
+                    idx = self.year_dropdown.findText(current_year)
+                    if idx != -1:
+                        self.year_dropdown.setCurrentIndex(idx)
+        except Exception as e:
+            logging.error(f"Error updating years for locked model '{locked_model}': {e}")
+
+    def update_makes_for_locked_model(self, locked_model):
+        """Update make dropdown to only makes that contain the locked model."""
+        try:
+            valid_makes = set()
+            for item in self.data['prequal']:
                     try:
-                        if (self.has_valid_prequal(item) and 'Year' in item and pd.notna(item['Year'])):
-                            item_year = int(float(item['Year']))
-                            if item_year == selected_year_int:
-                                valid_prequal_data.append(item)
+                        if (self.has_valid_prequal(item) and 'Model' in item and 'Make' in item and 
+                        str(item.get('Model', '')).strip() == str(locked_model).strip() and 
+                        item.get('Make', '').strip() and item.get('Make', '').strip().lower() != 'unknown'):
+                            valid_makes.add(item['Make'].strip())
                     except (ValueError, TypeError, KeyError):
                         continue
-                makes = []
-                for item in valid_prequal_data:
-                    try:
-                        if 'Make' in item and item['Make'].strip() and item['Make'].strip().lower() != 'unknown':
-                            makes.append(item['Make'].strip())
-                    except (AttributeError, KeyError):
-                        continue
-                makes = sorted(set(makes))
+            valid_makes = sorted(valid_makes)
+
+            # Only rebuild if make isn't locked
+            if not self.make_locked:
+                current_make = self.make_dropdown.currentText()
+                self.make_dropdown.blockSignals(True)
                 self.make_dropdown.clear()
                 self.make_dropdown.addItem("Select Make")
                 self.make_dropdown.addItem("All")
-                self.make_dropdown.addItems(makes)
-                if current_make in makes:
-                    index = self.make_dropdown.findText(current_make)
-                    if index != -1:
-                        self.make_dropdown.setCurrentIndex(index)
+                self.make_dropdown.addItems(valid_makes)
+                self.make_dropdown.blockSignals(False)
+                
+                # Restore selection if still present
+                if current_make in valid_makes:
+                    idx = self.make_dropdown.findText(current_make)
+                    if idx != -1:
+                        self.make_dropdown.setCurrentIndex(idx)
+        except Exception as e:
+            logging.error(f"Error updating makes for locked model '{locked_model}': {e}")
+
+    def update_makes_for_locked_year(self, locked_year):
+        """Update makes dropdown to only makes available for the locked year."""
+        try:
+            year_int = int(locked_year)
+            valid_makes = set()
+            for item in self.data['prequal']:
+                try:
+                    if (self.has_valid_prequal(item) and 'Year' in item and 'Make' in item and 
+                        pd.notna(item.get('Year')) and int(float(item['Year'])) == year_int and
+                        item.get('Make', '').strip() and item.get('Make', '').strip().lower() != 'unknown'):
+                        valid_makes.add(item['Make'].strip())
+                except (ValueError, TypeError, KeyError):
+                        continue
+            valid_makes = sorted(valid_makes)
+
+            # Only rebuild if make isn't locked
+            if not self.make_locked:
+                current_make = self.make_dropdown.currentText()
+                self.make_dropdown.blockSignals(True)
+                self.make_dropdown.clear()
+                self.make_dropdown.addItem("Select Make")
+                self.make_dropdown.addItem("All")
+                self.make_dropdown.addItems(valid_makes)
+                self.make_dropdown.blockSignals(False)
+                
+                # Restore selection if still present
+                if current_make in valid_makes:
+                    idx = self.make_dropdown.findText(current_make)
+                    if idx != -1:
+                        self.make_dropdown.setCurrentIndex(idx)
+        except Exception as e:
+            logging.error(f"Error updating makes for locked year '{locked_year}': {e}")
+
+    def update_models_for_locked_year(self, locked_year):
+        """Update models dropdown to only models available for the locked year."""
+        try:
+            year_int = int(locked_year)
+            valid_models = set()
+            for item in self.data['prequal']:
+                try:
+                    if (self.has_valid_prequal(item) and 'Year' in item and 'Model' in item and 
+                        pd.notna(item.get('Year')) and int(float(item['Year'])) == year_int):
+                        valid_models.add(str(item['Model']))
+                except (ValueError, TypeError, KeyError):
+                    continue
+            valid_models = sorted(valid_models)
+
+            # Only rebuild if model isn't locked
+            if not self.model_locked:
+                current_model = self.model_dropdown.currentText()
+                self.model_dropdown.blockSignals(True)
                 self.model_dropdown.clear()
                 self.model_dropdown.addItem("Select Model")
-                updated_make = self.make_dropdown.currentText()
-                if updated_make not in ["Select Make", "All"]:
-                    self.update_model_dropdown()
-            except (ValueError, TypeError) as e:
-                import logging
-                logging.error(f"Error updating makes for year {selected_year}: {e}")
-        if selected_filter in ["Prequals", "Gold and Black", "Blacklist", "Goldlist", "Mag Glass", "All"]:
-            self.perform_search()
-        self.update_visible_panels()
+                self.model_dropdown.addItems(valid_models)
+                self.model_dropdown.blockSignals(False)
+                
+                # Restore selection if still present
+                if current_model in valid_models:
+                    idx = self.model_dropdown.findText(current_model)
+                    if idx != -1:
+                        self.model_dropdown.setCurrentIndex(idx)
+        except Exception as e:
+            logging.error(f"Error updating models for locked year '{locked_year}': {e}")
+
+    def update_years_for_locked_make(self, locked_make):
+        """Update year dropdown to only years available for the locked make."""
+        try:
+            valid_years = set()
+            for item in self.data['prequal']:
+                try:
+                    if (self.has_valid_prequal(item) and 'Make' in item and 'Year' in item and 
+                        pd.notna(item.get('Year')) and str(item.get('Make', '')).strip() == str(locked_make).strip()):
+                        valid_years.add(int(float(item['Year'])))
+                except (ValueError, TypeError, KeyError):
+                    continue
+            valid_years = sorted(valid_years, reverse=True)
+
+            # Only rebuild if year isn't locked
+            if not self.year_locked:
+                current_year = self.year_dropdown.currentText()
+                self.year_dropdown.blockSignals(True)
+                self.year_dropdown.clear()
+                self.year_dropdown.addItem("Select Year")
+                self.year_dropdown.addItems([str(y) for y in valid_years])
+                self.year_dropdown.blockSignals(False)
+                
+                # Restore selection if still present
+                if current_year in [str(y) for y in valid_years]:
+                    idx = self.year_dropdown.findText(current_year)
+                    if idx != -1:
+                        self.year_dropdown.setCurrentIndex(idx)
+        except Exception as e:
+            logging.error(f"Error updating years for locked make '{locked_make}': {e}")
+
+    def update_models_for_locked_make(self, locked_make):
+        """Update models dropdown to only models available for the locked make."""
+        try:
+            valid_models = set()
+            for item in self.data['prequal']:
+                try:
+                    if (self.has_valid_prequal(item) and 'Make' in item and 'Model' in item and 
+                        str(item.get('Make', '')).strip() == str(locked_make).strip()):
+                        valid_models.add(str(item['Model']))
+                except (ValueError, TypeError, KeyError):
+                    continue
+            valid_models = sorted(valid_models)
+
+            # Only rebuild if model isn't locked
+            if not self.model_locked:
+                current_model = self.model_dropdown.currentText()
+                self.model_dropdown.blockSignals(True)
+                self.model_dropdown.clear()
+                self.model_dropdown.addItem("Select Model")
+                self.model_dropdown.addItems(valid_models)
+                self.model_dropdown.blockSignals(False)
+                
+                # Restore selection if still present
+                if current_model in valid_models:
+                    idx = self.model_dropdown.findText(current_model)
+                    if idx != -1:
+                        self.model_dropdown.setCurrentIndex(idx)
+        except Exception as e:
+            logging.error(f"Error updating models for locked make '{locked_make}': {e}")
+
+    def update_years_based_on_selections(self, make_to_use, model_to_use):
+        """Update year dropdown to show only years that match current make and model selections."""
+        try:
+            valid_years = set()
+            for item in self.data['prequal']:
+                try:
+                    if not self.has_valid_prequal(item) or pd.isna(item.get('Year')):
+                        continue
+                    
+                    # Check if this item matches our current selections
+                    make_matches = (make_to_use in ["Select Make", "All", ""] or 
+                                  str(item.get('Make', '')).strip() == str(make_to_use).strip())
+                    model_matches = (model_to_use in ["Select Model", ""] or 
+                                   str(item.get('Model', '')).strip() == str(model_to_use).strip())
+                    
+                    if make_matches and model_matches:
+                        # Apply region filtering - only include years for makes in current region
+                        make = item.get('Make', '').strip()
+                        if self.is_make_in_current_region(make):
+                            valid_years.add(int(float(item['Year'])))
+                except (ValueError, TypeError, KeyError):
+                    continue
+            
+            valid_years = sorted(valid_years, reverse=True)
+            
+            # Store current selection
+            current_year = self.year_dropdown.currentText()
+            
+            # Rebuild dropdown
+            self.year_dropdown.blockSignals(True)
+            self.year_dropdown.clear()
+            self.year_dropdown.addItem("Select Year")
+            for year in valid_years:
+                self.year_dropdown.addItem(str(year))
+            self.year_dropdown.blockSignals(False)
+            
+            # Try to restore selection
+            if current_year != "Select Year":
+                index = self.year_dropdown.findText(current_year)
+                if index >= 0:
+                    self.year_dropdown.setCurrentIndex(index)
+                    
+        except Exception as e:
+            print(f"Error updating years based on selections: {e}")
+    
+    def update_makes_based_on_selections(self, year_to_use, model_to_use):
+        """Update make dropdown to show only makes that match current year and model selections."""
+        try:
+            valid_makes = set()
+            for item in self.data['prequal']:
+                try:
+                    if not self.has_valid_prequal(item):
+                        continue
+                    
+                    # Check if this item matches our current selections
+                    year_matches = (year_to_use in ["Select Year", ""] or 
+                                  str(item.get('Year', '')).strip() == str(year_to_use).strip())
+                    model_matches = (model_to_use in ["Select Model", ""] or 
+                                   str(item.get('Model', '')).strip() == str(model_to_use).strip())
+                    
+                    if year_matches and model_matches and 'Make' in item and item['Make'].strip():
+                        make = item['Make'].strip()
+                        # Apply region filtering
+                        if self.is_make_in_current_region(make):
+                            valid_makes.add(make)
+                except (ValueError, TypeError, KeyError):
+                    continue
+            
+            valid_makes = sorted(valid_makes)
+            
+            # Store current selection
+            current_make = self.make_dropdown.currentText()
+            
+            # Rebuild dropdown
+            self.make_dropdown.blockSignals(True)
+            self.make_dropdown.clear()
+            self.make_dropdown.addItem("Select Make")
+            for make in valid_makes:
+                self.make_dropdown.addItem(make)
+            self.make_dropdown.blockSignals(False)
+            
+            # Try to restore selection
+            if current_make not in ["Select Make", "All"]:
+                    index = self.make_dropdown.findText(current_make)
+                    if index >= 0:
+                        self.make_dropdown.setCurrentIndex(index)
+                    
+        except Exception as e:
+            print(f"Error updating makes based on selections: {e}")
+    
+    def update_models_based_on_selections(self, year_to_use, make_to_use):
+        """Update model dropdown to show only models that match current year and make selections."""
+        try:
+            valid_models = set()
+            for item in self.data['prequal']:
+                try:
+                    if not self.has_valid_prequal(item):
+                        continue
+                    
+                    # Check if this item matches our current selections
+                    year_matches = (year_to_use in ["Select Year", ""] or 
+                                  str(item.get('Year', '')).strip() == str(year_to_use).strip())
+                    make_matches = (make_to_use in ["Select Make", "All", ""] or 
+                                  str(item.get('Make', '')).strip() == str(make_to_use).strip())
+                    
+                    if year_matches and make_matches and 'Model' in item and item['Model'].strip():
+                        # Apply region filtering - only include models for makes in current region
+                        make = item.get('Make', '').strip()
+                        if self.is_make_in_current_region(make):
+                            valid_models.add(item['Model'].strip())
+                except (ValueError, TypeError, KeyError):
+                    continue
+            
+            valid_models = sorted(valid_models)
+            
+            # Store current selection
+            current_model = self.model_dropdown.currentText()
+            
+            # Rebuild dropdown
+            self.model_dropdown.blockSignals(True)
+            self.model_dropdown.clear()
+            self.model_dropdown.addItem("Select Model")
+            for model in valid_models:
+                self.model_dropdown.addItem(model)
+            self.model_dropdown.blockSignals(False)
+            
+            # Try to restore selection
+            if current_model not in ["Select Model", ""]:
+                index = self.model_dropdown.findText(current_model)
+                if index >= 0:
+                    self.model_dropdown.setCurrentIndex(index)
+                    
+        except Exception as e:
+            print(f"Error updating models based on selections: {e}")
+
+    def toggle_region_mode(self):
+        """Toggle between ALL and REGION mode"""
+        if self.region_toggle_button.isChecked():
+            # Switch to REGION mode
+            self.region_toggle_button.setText("ALL/REGION")
+            self.region_dropdown.show()
+            self.region_dropdown.setMaximumHeight(16777215)  # Reset to default max height
+            self.current_region = self.region_dropdown.currentText()
+            # Restore card shadow for REGION mode
+            region_card = self.findChild(QWidget, "region_card")
+            if region_card:
+                region_card.setStyleSheet("""
+                    QWidget#region_card {
+                        background: white;
+                        border-radius: 8px;
+                        border: 1px solid #e0e0e0;
+                        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+                    }
+                """)
+        else:
+            # Switch to ALL mode
+            self.region_toggle_button.setText("ALL/REGION")
+            self.region_dropdown.hide()
+            self.region_dropdown.setMaximumHeight(0)  # Ensure it takes no space
+            self.current_region = 'ALL'
+            # Remove card shadow for ALL mode
+            region_card = self.findChild(QWidget, "region_card")
+            if region_card:
+                region_card.setStyleSheet("""
+                    QWidget#region_card {
+                        background: white;
+                        border-radius: 8px;
+                        border: 1px solid #e0e0e0;
+                        box-shadow: none;
+                    }
+                """)
+        
+        # Update dropdowns to reflect region filtering
+        self.update_dropdowns_with_locks()
+        
+    def on_region_changed(self):
+        """Handle region dropdown selection change"""
+        if self.region_toggle_button.isChecked():
+            self.current_region = self.region_dropdown.currentText()
+            # Update dropdowns to reflect new region
+            self.update_dropdowns_with_locks()
+    
+    def get_region_filtered_makes(self):
+        """Get makes filtered by current region selection"""
+        if self.current_region == 'ALL':
+            return None  # No filtering
+        return self.region_makes.get(self.current_region, [])
+    
+    def is_make_in_current_region(self, make):
+        """Check if a make is in the current region"""
+        if self.current_region == 'ALL':
+            return True
+        return make in self.region_makes.get(self.current_region, [])
+
+class VehicleCompareDialog(ModernDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent = parent
+        self.setWindowTitle("Vehicle Comparison")
+        self.setFixedSize(1200, 800)
+        self.setup_ui()
+        
+    def setup_ui(self):
+        """Setup the user interface with modern styling matching the main app"""
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+        layout.setContentsMargins(20, 20, 20, 20)
+        
+        # Compact header
+        header_layout = QHBoxLayout()
+        
+        title_label = QLabel("Vehicle Comparison")
+        title_label.setStyleSheet("""
+            QLabel {
+                font-size: 24px;
+                font-weight: 700;
+                color: #333;
+            }
+        """)
+        
+        subtitle_label = QLabel("Compare prequalification data between two vehicles")
+        subtitle_label.setStyleSheet("""
+            QLabel {
+                font-size: 12px;
+                color: #666;
+                font-style: italic;
+            }
+        """)
+        
+        header_layout.addWidget(title_label)
+        header_layout.addStretch()
+        header_layout.addWidget(subtitle_label)
+        layout.addLayout(header_layout)
+        
+        # Compact vehicle selection section
+        selection_layout = QHBoxLayout()
+        selection_layout.setSpacing(15)
+        
+        # Vehicle 1 selection (compact)
+        vehicle1_group = QGroupBox("Vehicle 1")
+        vehicle1_group.setStyleSheet("""
+            QGroupBox {
+                font-weight: bold;
+                border: 2px solid #1976d2;
+                border-radius: 8px;
+                margin-top: 8px;
+                padding-top: 8px;
+                background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%);
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px 0 5px;
+                color: #1976d2;
+            }
+        """)
+        vehicle1_layout = QGridLayout(vehicle1_group)
+        vehicle1_layout.setSpacing(5)
+        
+        self.vehicle1_year = ModernComboBox()
+        self.vehicle1_year.addItem("Select Year")
+        self.vehicle1_make = ModernComboBox()
+        self.vehicle1_make.addItem("Select Make")
+        self.vehicle1_model = ModernComboBox()
+        self.vehicle1_model.addItem("Select Model")
+        
+        vehicle1_layout.addWidget(QLabel("Year:"), 0, 0)
+        vehicle1_layout.addWidget(self.vehicle1_year, 0, 1)
+        vehicle1_layout.addWidget(QLabel("Make:"), 1, 0)
+        vehicle1_layout.addWidget(self.vehicle1_make, 1, 1)
+        vehicle1_layout.addWidget(QLabel("Model:"), 2, 0)
+        vehicle1_layout.addWidget(self.vehicle1_model, 2, 1)
+        
+        # VS label (compact)
+        vs_label = QLabel("VS")
+        vs_label.setStyleSheet("""
+            QLabel {
+                font-size: 20px;
+                font-weight: 700;
+                color: #dc3545;
+                padding: 10px;
+                background: linear-gradient(135deg, #dc3545 0%, #c82333 100%);
+                color: white;
+                border-radius: 8px;
+                min-width: 50px;
+                text-align: center;
+            }
+        """)
+        
+        # Vehicle 2 selection (compact)
+        vehicle2_group = QGroupBox("Vehicle 2")
+        vehicle2_group.setStyleSheet("""
+            QGroupBox {
+                font-weight: bold;
+                border: 2px solid #7b1fa2;
+                border-radius: 8px;
+                margin-top: 8px;
+                padding-top: 8px;
+                background: linear-gradient(135deg, #f3e5f5 0%, #e1bee7 100%);
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px 0 5px;
+                color: #7b1fa2;
+            }
+        """)
+        vehicle2_layout = QGridLayout(vehicle2_group)
+        vehicle2_layout.setSpacing(5)
+        
+        self.vehicle2_year = ModernComboBox()
+        self.vehicle2_year.addItem("Select Year")
+        self.vehicle2_make = ModernComboBox()
+        self.vehicle2_make.addItem("Select Make")
+        self.vehicle2_model = ModernComboBox()
+        self.vehicle2_model.addItem("Select Model")
+        
+        vehicle2_layout.addWidget(QLabel("Year:"), 0, 0)
+        vehicle2_layout.addWidget(self.vehicle2_year, 0, 1)
+        vehicle2_layout.addWidget(QLabel("Make:"), 1, 0)
+        vehicle2_layout.addWidget(self.vehicle2_make, 1, 1)
+        vehicle2_layout.addWidget(QLabel("Model:"), 2, 0)
+        vehicle2_layout.addWidget(self.vehicle2_model, 2, 1)
+        
+        selection_layout.addWidget(vehicle1_group)
+        selection_layout.addWidget(vs_label, alignment=Qt.AlignCenter)
+        selection_layout.addWidget(vehicle2_group)
+        
+        layout.addLayout(selection_layout)
+        
+        # Compact compare button
+        compare_button = ModernButton("Compare Vehicles", style="primary")
+        compare_button.setStyleSheet("""
+            ModernButton {
+                font-size: 14px;
+                font-weight: 600;
+                padding: 10px 20px;
+                margin: 10px 0;
+            }
+        """)
+        compare_button.clicked.connect(self.compare_vehicles)
+        layout.addWidget(compare_button, alignment=Qt.AlignCenter)
+        
+        # Results section (maximized)
+        results_group = QGroupBox("Comparison Results")
+        results_group.setStyleSheet("""
+            QGroupBox {
+                font-weight: bold;
+                border: 2px solid #dee2e6;
+                border-radius: 8px;
+                margin-top: 8px;
+                padding-top: 8px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px 0 5px;
+            }
+        """)
+        results_layout = QVBoxLayout(results_group)
+        results_layout.setSpacing(5)
+        
+        # Results display with modern styling
+        self.results_display = ModernTextBrowser()
+        self.results_display.setStyleSheet("""
+            ModernTextBrowser {
+                background: #ffffff;
+                border: 2px solid #e9ecef;
+                border-radius: 10px;
+                padding: 15px;
+                font-family: 'Segoe UI', Arial, sans-serif;
+                font-size: 13px;
+                line-height: 1.5;
+            }
+        """)
+        self.results_display.setMinimumHeight(500)
+        results_layout.addWidget(self.results_display)
+        
+        layout.addWidget(results_group, 1)  # Give results more space
+        
+        # Populate dropdowns
+        self.populate_dropdowns()
+        
+        # Connect signals
+        self.vehicle1_year.currentTextChanged.connect(lambda: self.on_vehicle1_changed('year'))
+        self.vehicle1_make.currentTextChanged.connect(lambda: self.on_vehicle1_changed('make'))
+        self.vehicle2_year.currentTextChanged.connect(lambda: self.on_vehicle2_changed('year'))
+        self.vehicle2_make.currentTextChanged.connect(lambda: self.on_vehicle2_changed('make'))
+        
+    def populate_dropdowns(self):
+        """Populate dropdowns with available data"""
+        if not hasattr(self.parent, 'data') or 'prequal' not in self.parent.data:
+            return
+            
+        # Get unique years, makes, and models
+        years = set()
+        makes = set()
+        models = set()
+        
+        for item in self.parent.data['prequal']:
+            if self.parent.has_valid_prequal(item):
+                if 'Year' in item and pd.notna(item['Year']):
+                    years.add(int(float(item['Year'])))
+                if 'Make' in item and item['Make'].strip():
+                    makes.add(item['Make'].strip())
+                if 'Model' in item and item['Model'].strip():
+                    models.add(item['Model'].strip())
+        
+        # Populate year dropdowns
+        sorted_years = sorted(years, reverse=True)
+        for year in sorted_years:
+            self.vehicle1_year.addItem(str(year))
+            self.vehicle2_year.addItem(str(year))
+        
+        # Populate make dropdowns
+        sorted_makes = sorted(makes)
+        for make in sorted_makes:
+            self.vehicle1_make.addItem(make)
+            self.vehicle2_make.addItem(make)
+    
+    def on_vehicle1_changed(self, field):
+        """Handle vehicle 1 selection changes"""
+        if field == 'year':
+            self.update_vehicle1_models()
+        elif field == 'make':
+            self.update_vehicle1_models()
+    
+    def on_vehicle2_changed(self, field):
+        """Handle vehicle 2 selection changes"""
+        if field == 'year':
+            self.update_vehicle2_models()
+        elif field == 'make':
+            self.update_vehicle2_models()
+    
+    def update_vehicle1_models(self):
+        """Update vehicle 1 model dropdown"""
+        year = self.vehicle1_year.currentText()
+        make = self.vehicle1_make.currentText()
+        
+        self.vehicle1_model.clear()
+        self.vehicle1_model.addItem("Select Model")
+        
+        if year != "Select Year" and make != "Select Make":
+            models = set()
+            for item in self.parent.data['prequal']:
+                if (self.parent.has_valid_prequal(item) and 
+                    str(item.get('Year', '')).strip() == year and
+                    str(item.get('Make', '')).strip() == make and
+                    'Model' in item and item['Model'].strip()):
+                    models.add(item['Model'].strip())
+            
+            for model in sorted(models):
+                self.vehicle1_model.addItem(model)
+    
+    def update_vehicle2_models(self):
+        """Update vehicle 2 model dropdown"""
+        year = self.vehicle2_year.currentText()
+        make = self.vehicle2_make.currentText()
+        
+        self.vehicle2_model.clear()
+        self.vehicle2_model.addItem("Select Model")
+        
+        if year != "Select Year" and make != "Select Make":
+            models = set()
+            for item in self.parent.data['prequal']:
+                if (self.parent.has_valid_prequal(item) and 
+                    str(item.get('Year', '')).strip() == year and
+                    str(item.get('Make', '')).strip() == make and
+                    'Model' in item and item['Model'].strip()):
+                    models.add(item['Model'].strip())
+            
+            for model in sorted(models):
+                self.vehicle2_model.addItem(model)
+    
+    def compare_vehicles(self):
+        """Compare the selected vehicles"""
+        vehicle1 = {
+            'year': self.vehicle1_year.currentText(),
+            'make': self.vehicle1_make.currentText(),
+            'model': self.vehicle1_model.currentText()
+        }
+        
+        vehicle2 = {
+            'year': self.vehicle2_year.currentText(),
+            'make': self.vehicle2_make.currentText(),
+            'model': self.vehicle2_model.currentText()
+        }
+        
+        # Validate selections
+        if (vehicle1['year'] == "Select Year" or vehicle1['make'] == "Select Make" or vehicle1['model'] == "Select Model" or
+            vehicle2['year'] == "Select Year" or vehicle2['make'] == "Select Make" or vehicle2['model'] == "Select Model"):
+            self.results_display.setPlainText("Please select complete vehicle information for both vehicles.")
+            return
+        
+        # Get prequalification data for both vehicles
+        vehicle1_data = {'prequal': self.get_prequal_data(vehicle1)}
+        vehicle2_data = {'prequal': self.get_prequal_data(vehicle2)}
+        
+        # Check if any data was found
+        has_data = vehicle1_data['prequal'] or vehicle2_data['prequal']
+        if not has_data:
+            self.results_display.setPlainText("No prequalification data found for the selected vehicles.")
+            return
+        
+        # Generate comparison
+        comparison = self.generate_detailed_comparison(vehicle1, vehicle2, vehicle1_data, vehicle2_data)
+        self.results_display.setHtml(comparison)
+    
+    def get_prequal_data(self, vehicle):
+        """Get prequal data for a specific vehicle"""
+        data = []
+        for item in self.parent.data['prequal']:
+            if (self.parent.has_valid_prequal(item) and
+                str(item.get('Year', '')).strip() == vehicle['year'] and
+                str(item.get('Make', '')).strip() == vehicle['make'] and
+                str(item.get('Model', '')).strip() == vehicle['model']):
+                data.append(item)
+        return data
+    
+    def get_blacklist_data(self, vehicle):
+        """Get blacklist data for a specific vehicle"""
+        data = []
+        for item in self.parent.data['blacklist']:
+            if (str(item.get('Make', '')).strip() == vehicle['make']):
+                data.append(item)
+        return data
+    
+    def get_goldlist_data(self, vehicle):
+        """Get goldlist data for a specific vehicle"""
+        data = []
+        for item in self.parent.data['goldlist']:
+            if (str(item.get('Make', '')).strip() == vehicle['make']):
+                data.append(item)
+        return data
+    
+    def get_mag_glass_data(self, vehicle):
+        """Get mag glass data for a specific vehicle"""
+        data = []
+        for item in self.parent.data['mag_glass']:
+            if (str(item.get('Make', '')).strip() == vehicle['make']):
+                data.append(item)
+        return data
+    
+    def get_carsys_data(self, vehicle):
+        """Get carsys data for a specific vehicle"""
+        data = []
+        for item in self.parent.data['carsys']:
+            if (str(item.get('Make', '')).strip() == vehicle['make']):
+                data.append(item)
+        return data
+    
+    def generate_comparison(self, vehicle1, vehicle2, vehicle1_data, vehicle2_data):
+        """Generate HTML comparison between two vehicles"""
+        html = f"""
+        <html>
+        <head>
+            <style>
+                body {{ font-family: Arial, sans-serif; margin: 20px; }}
+                .header {{ background: #20567C; color: white; padding: 15px; border-radius: 8px; margin-bottom: 20px; }}
+                .vehicle-info {{ background: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 20px; }}
+                .comparison-table {{ width: 100%; border-collapse: collapse; margin-top: 20px; }}
+                .comparison-table th, .comparison-table td {{ 
+                    border: 1px solid #dee2e6; padding: 10px; text-align: left; 
+                }}
+                .comparison-table th {{ background: #e9ecef; font-weight: bold; }}
+                .highlight {{ background: #fff3cd; }}
+                .different {{ background: #f8d7da; }}
+                .same {{ background: #d4edda; }}
+            </style>
+        </head>
+        <body>
+            <div class="header">
+                <h1>Vehicle Comparison</h1>
+                <p>Comparing {vehicle1['year']} {vehicle1['make']} {vehicle1['model']} vs {vehicle2['year']} {vehicle2['make']} {vehicle2['model']}</p>
+            </div>
+        """
+        
+        # Vehicle information summary
+        html += f"""
+            <div class="vehicle-info">
+                <h3>Vehicle Information</h3>
+                <table class="comparison-table">
+                    <tr>
+                        <th>Attribute</th>
+                        <th>Vehicle 1</th>
+                        <th>Vehicle 2</th>
+                        <th>Status</th>
+                    </tr>
+                    <tr>
+                        <td>Year</td>
+                        <td>{vehicle1['year']}</td>
+                        <td>{vehicle2['year']}</td>
+                        <td class="{'same' if vehicle1['year'] == vehicle2['year'] else 'different'}">
+                            {'Same' if vehicle1['year'] == vehicle2['year'] else 'Different'}
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>Make</td>
+                        <td>{vehicle1['make']}</td>
+                        <td>{vehicle2['make']}</td>
+                        <td class="{'same' if vehicle1['make'] == vehicle2['make'] else 'different'}">
+                            {'Same' if vehicle1['make'] == vehicle2['make'] else 'Different'}
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>Model</td>
+                        <td>{vehicle1['model']}</td>
+                        <td>{vehicle2['model']}</td>
+                        <td class="{'same' if vehicle1['model'] == vehicle2['model'] else 'different'}">
+                            {'Same' if vehicle1['model'] == vehicle2['model'] else 'Different'}
+                        </td>
+                    </tr>
+                </table>
+            </div>
+        """
+        
+        # Data comparison
+        html += f"""
+            <div class="vehicle-info">
+                <h3>Data Comparison</h3>
+                <table class="comparison-table">
+                    <tr>
+                        <th>Data Type</th>
+                        <th>Vehicle 1 Records</th>
+                        <th>Vehicle 2 Records</th>
+                    </tr>
+                    <tr>
+                        <td>Prequalification Data</td>
+                        <td>{len(vehicle1_data)} records</td>
+                        <td>{len(vehicle2_data)} records</td>
+                    </tr>
+                </table>
+            </div>
+        """
+        
+        # Detailed comparison of prequal data
+        if vehicle1_data or vehicle2_data:
+            html += """
+                <div class="vehicle-info">
+                    <h3>Prequalification Data Comparison</h3>
+                    <table class="comparison-table">
+                        <tr>
+                            <th>Component</th>
+                            <th>Vehicle 1</th>
+                            <th>Vehicle 2</th>
+                        </tr>
+            """
+            
+            # Get unique components
+            components = set()
+            for item in vehicle1_data + vehicle2_data:
+                if 'Parent Component' in item:
+                    components.add(item['Parent Component'])
+            
+            for component in sorted(components):
+                vehicle1_components = [item for item in vehicle1_data if item.get('Parent Component') == component]
+                vehicle2_components = [item for item in vehicle2_data if item.get('Parent Component') == component]
+                
+                html += f"""
+                    <tr>
+                        <td>{component}</td>
+                        <td>{'✓' if vehicle1_components else '✗'} ({len(vehicle1_components)} records)</td>
+                        <td>{'✓' if vehicle2_components else '✗'} ({len(vehicle2_components)} records)</td>
+                    </tr>
+                """
+            
+            html += "</table></div>"
+        
+        html += "</body></html>"
+        return html
+    
+    def generate_detailed_comparison(self, vehicle1, vehicle2, vehicle1_data, vehicle2_data):
+        """Generate detailed HTML comparison matching main window format"""
+        # Extract vehicle information for proper string formatting
+        vehicle1_year = vehicle1['year']
+        vehicle1_make = vehicle1['make']
+        vehicle1_model = vehicle1['model']
+        vehicle2_year = vehicle2['year']
+        vehicle2_make = vehicle2['make']
+        vehicle2_model = vehicle2['model']
+        # Build HTML string step by step to avoid f-string issues
+        html = """
+        <html>
+        <head>
+            <style>
+                body { 
+                    font-family: 'Segoe UI', Arial, sans-serif; 
+                    margin: 0; 
+                    padding: 10px; 
+                    background: #ffffff; 
+                    color: #333; 
+                }
+                .vehicle-header { 
+                    background: #f0f0f0; 
+                    color: #000; 
+                    padding: 8px; 
+                    border-radius: 4px; 
+                    font-weight: 600; 
+                    font-size: 14px; 
+                    margin-bottom: 10px; 
+                    text-align: center; 
+                    border: 1px solid #ccc; 
+                }
+                .content-area { 
+                    background: #ffffff; 
+                    border: 1px solid #ddd; 
+                    border-radius: 4px; 
+                    padding: 8px; 
+                    min-height: 400px; 
+                    overflow-y: auto; 
+                }
+            </style>
+        </head>
+        <body>
+        """
+        
+        # Get all unique system names from both vehicles
+        v1_prequal = vehicle1_data.get('prequal', [])
+        v2_prequal = vehicle2_data.get('prequal', [])
+        
+        # Create dictionaries to map system names to their data
+        v1_systems = {}
+        v2_systems = {}
+        
+        for record in v1_prequal:
+            system_name = record.get('Protech Generic System Name', 'Unknown System')
+            v1_systems[system_name] = record
+            
+        for record in v2_prequal:
+            system_name = record.get('Protech Generic System Name', 'Unknown System')
+            v2_systems[system_name] = record
+        
+        # Get all unique system names
+        all_systems = set(v1_systems.keys()) | set(v2_systems.keys())
+        all_systems = sorted(list(all_systems))
+        
+        if all_systems:
+            # Create the main comparison table that spans full width
+            html += """
+            <div style="margin-bottom: 20px;">
+                <div style="background: #f5f5f5; padding: 10px; border-radius: 4px; margin-bottom: 10px; font-weight: bold; text-align: center;">
+                    System Comparison: """ + f"{vehicle1_year} {vehicle1_make} {vehicle1_model}" + """ vs """ + f"{vehicle2_year} {vehicle2_make} {vehicle2_model}" + """
+                </div>
+                <table style="width: 100%; border-collapse: collapse;">
+                    <tr style="background: #f0f0f0; font-weight: bold;">
+                        <td style="padding: 8px; border: 1px solid #ddd; width: 50%; text-align: center;">Vehicle 1: """ + f"{vehicle1_year} {vehicle1_make} {vehicle1_model}" + """</td>
+                        <td style="padding: 8px; border: 1px solid #ddd; width: 50%; text-align: center;">Vehicle 2: """ + f"{vehicle2_year} {vehicle2_make} {vehicle2_model}" + """</td>
+                    </tr>
+            """
+            
+            for system_name in all_systems:
+                v1_has_system = system_name in v1_systems
+                v2_has_system = system_name in v2_systems
+                
+                html += f'<tr><td style="padding: 8px; border: 1px solid #ddd; vertical-align: top;">'
+                
+                if v1_has_system:
+                    # Format Vehicle 1 system data
+                    record = v1_systems[system_name]
+                    html += f'<div style="margin-bottom: 10px;"><strong>{system_name}</strong></div>'
+                    html += self.format_single_record(record)
+                else:
+                    html += f'<div style="text-align: center; padding: 20px; color: #999; font-style: italic;">System not available: {system_name}</div>'
+                
+                html += '</td><td style="padding: 8px; border: 1px solid #ddd; vertical-align: top;">'
+                
+                if v2_has_system:
+                    # Format Vehicle 2 system data
+                    record = v2_systems[system_name]
+                    html += f'<div style="margin-bottom: 10px;"><strong>{system_name}</strong></div>'
+                    html += self.format_single_record(record)
+                else:
+                    html += f'<div style="text-align: center; padding: 20px; color: #999; font-style: italic;">System not available: {system_name}</div>'
+                
+                html += '</td></tr>'
+            
+            html += '</table></div>'
+        else:
+            html += '<div style="text-align: center; padding: 40px; color: #666; font-style: italic;">*No prequalification data found for either vehicle.*</div>'
+        
+        html += """
+        </body>
+        </html>
+        """
+        return html
+    
+    def format_comparison_data(self, results):
+        """Format data for comparison using main window style"""
+        if not results:
+            return '<div style="text-align: center; padding: 40px; color: #666; font-style: italic;">*No prequalification data found for the selected criteria.*</div>'
+        
+        # Convert to markdown format (same as main window)
+        markdown_text = ""
+        
+        for result in results:
+            # Check if any relevant field is "N/A" or None (match original app logic)
+            if any(
+                result.get(key) in [None, 'N/A'] 
+                for key in ['Make', 'Model', 'Year', 'Calibration Type', 'Protech Generic System Name.1', 'Parts Code Table Value', 'Calibration Pre-Requisites']
+            ):
+                continue  # Skip this result
+            
+            # Get all available fields from the result (match original app)
+            year = result.get('Year', 'N/A')
+            if isinstance(year, float):
+                year = str(int(year))
+            
+            make = result.get('Make', 'N/A')
+            model = result.get('Model', 'N/A')
+            system_acronym = result.get('Protech Generic System Name.1', 'N/A')
+            parts_code = result.get('Parts Code Table Value', 'N/A')
+            calibration_type = result.get('Calibration Type', 'N/A')
+            og_calibration_type = result.get('OG Calibration Type', 'N/A')
+            calibration_prerequisites = result.get('Calibration Pre-Requisites', 'N/A')
+            
+            # Handle link safely (match original app)
+            service_link = result.get('Service Information Hyperlink', '#')
+            if isinstance(service_link, float) and pd.isna(service_link):
+                service_link = '#'
+            elif isinstance(service_link, str) and not service_link.startswith(('http://', 'https://')):
+                service_link = 'http://' + service_link
+            
+            # Create markdown entry (match original app format with clickable link)
+            markdown_text += f"""
+**Make:** {make}  
+**Model:** {model}  
+**Year:** {year}  
+**System Acronym:** {system_acronym}  
+**Parts Code Table Value:** {parts_code}  
+**Calibration Type:** {calibration_type}  
+**OG Calibration Type:** {og_calibration_type}  
+**Service Information:** <a href='{service_link}'>Click Here</a>  
+
+**Pre-Quals:** {calibration_prerequisites}  
+
+---
+"""
+        
+        if not markdown_text:
+            markdown_text = "*No prequalification data found for the selected criteria.*"
+        
+        # Convert markdown to HTML for display (same as main window)
+        html_text = self.convert_markdown_to_html(markdown_text)
+        return html_text
+    
+    def format_single_record(self, record):
+        """Format a single prequalification record for display"""
+        if not record:
+            return '<div style="color: #999; font-style: italic;">No data available</div>'
+        
+        html = '<div style="background: #fafafa; padding: 10px; border-radius: 4px; margin-bottom: 8px;">'
+        
+        # Display key fields
+        key_fields = [
+            ('Parent Component', 'Parent Component'),
+            ('Calibration Type', 'Calibration Type'),
+            ('Calibration Pre-Requisites', 'Calibration Pre-Requisites'),
+            ('Calibration Pre-Requisites (Short Hand)', 'Short Hand'),
+            ('Point of Impact #', 'Point of Impact'),
+            ('OEM ADAS System Name', 'OEM System Name'),
+            ('Component Generic Acronyms', 'Component Acronyms')
+        ]
+        
+        for field_key, display_name in key_fields:
+            if field_key in record and record[field_key] and str(record[field_key]) != 'nan':
+                value = str(record[field_key])
+                html += f'<div style="margin-bottom: 6px;"><strong>{display_name}:</strong> {value}</div>'
+        
+        # Add service information link if available
+        if 'Service Information Hyperlink' in record and record['Service Information Hyperlink'] and str(record['Service Information Hyperlink']) != 'nan':
+            link = record['Service Information Hyperlink']
+            html += f'<div style="margin-bottom: 6px;"><strong>Service Info:</strong> <a href="{link}" style="color: #0066cc;">View Service Information</a></div>'
+        
+        html += '</div>'
+        return html
+    
+    def convert_markdown_to_html(self, markdown_text):
+        """Convert markdown text to HTML for display with smaller font size"""
+        html = markdown_text
+        
+        # Convert markdown headers to HTML
+        html = html.replace('## ', '<h2 style="color: #20567C; margin-top: 15px; margin-bottom: 8px; border-bottom: 2px solid #20567C; padding-bottom: 3px; font-size: 12px;">')
+        html = html.replace('\n\n', '</h2>\n')
+        
+        # Convert bold text
+        html = html.replace('**', '<strong style="color: #20567C; font-size: 10px;">')
+        html = html.replace('**', '</strong>')
+        
+        # Convert italic text
+        html = html.replace('*', '<em style="font-size: 10px;">')
+        html = html.replace('*', '</em>')
+        
+        # Convert horizontal rules
+        html = html.replace('---', '<hr style="border: 1px solid #e0e0e0; margin: 12px 0;">')
+        
+        # Convert line breaks
+        html = html.replace('\n', '<br>')
+        
+        # Add styling wrapper with smaller font size
+        html = f"""
+        <div style="font-family: 'Segoe UI', Arial, sans-serif; font-size: 9px; line-height: 1.4; color: #333;">
+        {html}
+        </div>
+        """
+        
+        return html
+    
+    def format_side_by_side_data(self, data, data_type, vehicle_type='vehicle1'):
+        """Format data for side-by-side display"""
+        if not data:
+            return '<span class="no-data">No data</span>'
+        
+        # Set colors based on vehicle type
+        if vehicle_type == 'vehicle1':
+            border_color = '#1976d2'  # Blue
+            header_color = '#1976d2'
+        else:
+            border_color = '#7b1fa2'  # Purple
+            header_color = '#7b1fa2'
+        
+        html = ""
+        if data_type == 'prequal':
+            for i, item in enumerate(data):
+                html += f"""
+                    <div style=\"margin-bottom: 20px; padding: 16px; background: linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%); border-radius: 10px; border: 2px solid {border_color}; box-shadow: 0 4px 12px rgba(0,0,0,0.1); position: relative; overflow: hidden;\">
+                        <div style=\"position: absolute; top: 0; left: 0; right: 0; height: 3px; background: linear-gradient(90deg, {header_color}, {border_color});\"></div>
+                        <div style=\"background: {header_color}; color: white; padding: 8px 12px; margin: -16px -16px 12px -16px; border-radius: 8px 8px 0 0; font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 8px;\">
+                            <span style=\"font-size: 16px;\">📋</span> Record {i+1}
+                        </div>
+                        <div style=\"display: grid; gap: 8px;\">
+                            <div style=\"background: rgba(0,0,0,0.02); padding: 8px; border-radius: 6px; border-left: 3px solid {border_color};\">
+                                <strong style=\"color: {header_color};\">🔧 Component:</strong> {item.get('Parent Component', 'N/A')}
+                            </div>
+                            <div style=\"background: rgba(0,0,0,0.02); padding: 8px; border-radius: 6px; border-left: 3px solid {border_color};\">
+                                <strong style=\"color: {header_color};\">⚙️ System:</strong> {item.get('Protech Generic System Name', 'N/A')}
+                            </div>
+                            <div style=\"background: rgba(0,0,0,0.02); padding: 8px; border-radius: 6px; border-left: 3px solid {border_color};\">
+                                <strong style=\"color: {header_color};\">🎯 Calibration Type:</strong> {item.get('Calibration Type', 'N/A')}
+                            </div>
+                            <div style=\"background: rgba(0,0,0,0.02); padding: 8px; border-radius: 6px; border-left: 3px solid {border_color};\">
+                                <strong style=\"color: {header_color};\">📋 Prerequisites:</strong> {item.get('Calibration Pre-Requisites (Short Hand)', 'N/A')}
+                            </div>
+                            <div style=\"background: rgba(0,0,0,0.02); padding: 8px; border-radius: 6px; border-left: 3px solid {border_color};\">
+                                <strong style=\"color: {header_color};\">📍 Point of Impact:</strong> {item.get('Point of Impact #', 'N/A')}
+                            </div>
+                        </div>
+                    </div>
+                """
+        elif data_type in ['blacklist', 'goldlist']:
+            for i, item in enumerate(data):
+                html += f"""
+                    <div style=\"margin-bottom: 20px; padding: 16px; background: linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%); border-radius: 10px; border: 2px solid {border_color}; box-shadow: 0 4px 12px rgba(0,0,0,0.1); position: relative; overflow: hidden;\">
+                        <div style=\"position: absolute; top: 0; left: 0; right: 0; height: 3px; background: linear-gradient(90deg, {header_color}, {border_color});\"></div>
+                        <div style=\"background: {header_color}; color: white; padding: 8px 12px; margin: -16px -16px 12px -16px; border-radius: 8px 8px 0 0; font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 8px;\">
+                            <span style=\"font-size: 16px;\">🚨</span> Record {i+1}
+                        </div>
+                        <div style=\"display: grid; gap: 8px;\">
+                            <div style=\"background: rgba(0,0,0,0.02); padding: 8px; border-radius: 6px; border-left: 3px solid {border_color};\">
+                                <strong style=\"color: {header_color};\">🔢 DTC Code:</strong> {item.get('dtcCode', 'N/A')}
+                            </div>
+                            <div style=\"background: rgba(0,0,0,0.02); padding: 8px; border-radius: 6px; border-left: 3px solid {border_color};\">
+                                <strong style=\"color: {header_color};\">📝 Description:</strong> {item.get('dtcDescription', 'N/A')}
+                            </div>
+                            <div style=\"background: rgba(0,0,0,0.02); padding: 8px; border-radius: 6px; border-left: 3px solid {border_color};\">
+                                <strong style=\"color: {header_color};\">🚗 Make:</strong> {item.get('carMake', 'N/A')}
+                            </div>
+                        </div>
+                    </div>
+                """
+        elif data_type == 'mag_glass':
+            for i, item in enumerate(data):
+                html += f"""
+                    <div style=\"margin-bottom: 20px; padding: 16px; background: linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%); border-radius: 10px; border: 2px solid {border_color}; box-shadow: 0 4px 12px rgba(0,0,0,0.1); position: relative; overflow: hidden;\">
+                        <div style=\"position: absolute; top: 0; left: 0; right: 0; height: 3px; background: linear-gradient(90deg, {header_color}, {border_color});\"></div>
+                        <div style=\"background: {header_color}; color: white; padding: 8px 12px; margin: -16px -16px 12px -16px; border-radius: 8px 8px 0 0; font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 8px;\">
+                            <span style=\"font-size: 16px;\">🔍</span> Record {i+1}
+                        </div>
+                        <div style=\"display: grid; gap: 8px;\">
+                            <div style=\"background: rgba(0,0,0,0.02); padding: 8px; border-radius: 6px; border-left: 3px solid {border_color};\">
+                                <strong style=\"color: {header_color};\">🚗 Make:</strong> {item.get('Make', 'N/A')}
+                            </div>
+                            <div style=\"background: rgba(0,0,0,0.02); padding: 8px; border-radius: 6px; border-left: 3px solid {border_color};\">
+                                <strong style=\"color: {header_color};\">🏷️ Model:</strong> {item.get('Model', 'N/A')}
+                            </div>
+                            <div style=\"background: rgba(0,0,0,0.02); padding: 8px; border-radius: 6px; border-left: 3px solid {border_color};\">
+                                <strong style=\"color: {header_color};\">📅 Year:</strong> {item.get('Year', 'N/A')}
+                            </div>
+                        </div>
+                    </div>
+                """
+        elif data_type == 'carsys':
+            for i, item in enumerate(data):
+                html += f"""
+                    <div style=\"margin-bottom: 20px; padding: 16px; background: linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%); border-radius: 10px; border: 2px solid {border_color}; box-shadow: 0 4px 12px rgba(0,0,0,0.1); position: relative; overflow: hidden;\">
+                        <div style=\"position: absolute; top: 0; left: 0; right: 0; height: 3px; background: linear-gradient(90deg, {header_color}, {border_color});\"></div>
+                        <div style=\"background: {header_color}; color: white; padding: 8px 12px; margin: -16px -16px 12px -16px; border-radius: 8px 8px 0 0; font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 8px;\">
+                            <span style=\"font-size: 16px;\">💻</span> Record {i+1}
+                        </div>
+                        <div style=\"display: grid; gap: 8px;\">
+                            <div style=\"background: rgba(0,0,0,0.02); padding: 8px; border-radius: 6px; border-left: 3px solid {border_color};\">
+                                <strong style=\"color: {header_color};\">🚗 Make:</strong> {item.get('Make', 'N/A')}
+                            </div>
+                            <div style=\"background: rgba(0,0,0,0.02); padding: 8px; border-radius: 6px; border-left: 3px solid {border_color};\">
+                                <strong style=\"color: {header_color};\">🏷️ Model:</strong> {item.get('Model', 'N/A')}
+                            </div>
+                            <div style=\"background: rgba(0,0,0,0.02); padding: 8px; border-radius: 6px; border-left: 3px solid {border_color};\">
+                                <strong style=\"color: {header_color};\">⚙️ System:</strong> {item.get('System', 'N/A')}
+                            </div>
+                        </div>
+                    </div>
+                """
+        return html
+
+    def format_data_preview(self, data, data_type):
+        """Format a preview of the data for display"""
+        if not data:
+            return '<span class="no-data">No data</span>'
+        
+        html = ""
+        
+        if data_type == 'prequal':
+            for i, item in enumerate(data):
+                html += f"""
+                    <div style="margin-bottom: 10px; padding: 8px; background: #f8f9fa; border-radius: 4px;">
+                        <strong>Record {i+1}:</strong><br/>
+                        <strong>Component:</strong> {item.get('Parent Component', 'N/A')}<br/>
+                        <strong>System:</strong> {item.get('Protech Generic System Name', 'N/A')}<br/>
+                        <strong>Calibration Type:</strong> {item.get('Calibration Type', 'N/A')}<br/>
+                        <strong>Prerequisites:</strong> {item.get('Calibration Pre-Requisites (Short Hand)', 'N/A')}
+                    </div>
+                """
+        elif data_type in ['blacklist', 'goldlist']:
+            for i, item in enumerate(data):
+                html += f"""
+                    <div style="margin-bottom: 10px; padding: 8px; background: #f8f9fa; border-radius: 4px;">
+                        <strong>Record {i+1}:</strong><br/>
+                        <strong>DTC Code:</strong> {item.get('dtcCode', 'N/A')}<br/>
+                        <strong>Description:</strong> {item.get('dtcDescription', 'N/A')}<br/>
+                        <strong>Make:</strong> {item.get('carMake', 'N/A')}
+                    </div>
+                """
+        elif data_type == 'mag_glass':
+            for i, item in enumerate(data):
+                html += f"""
+                    <div style="margin-bottom: 10px; padding: 8px; background: #f8f9fa; border-radius: 4px;">
+                        <strong>Record {i+1}:</strong><br/>
+                        <strong>Make:</strong> {item.get('Make', 'N/A')}<br/>
+                        <strong>Model:</strong> {item.get('Model', 'N/A')}<br/>
+                        <strong>Year:</strong> {item.get('Year', 'N/A')}
+                    </div>
+                """
+        elif data_type == 'carsys':
+            for i, item in enumerate(data):
+                html += f"""
+                    <div style="margin-bottom: 10px; padding: 8px; background: #f8f9fa; border-radius: 4px;">
+                        <strong>Record {i+1}:</strong><br/>
+                        <strong>Make:</strong> {item.get('Make', 'N/A')}<br/>
+                        <strong>Model:</strong> {item.get('Model', 'N/A')}<br/>
+                        <strong>System:</strong> {item.get('System', 'N/A')}
+                    </div>
+                """
+        
+        return html
+
+# ... existing code ...
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
