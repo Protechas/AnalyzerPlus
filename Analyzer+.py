@@ -1887,6 +1887,19 @@ class ManageDataListsDialog(ModernDialog):
                     for i, (filename, filepath) in enumerate(files.items()):
                         try:
                             logging.info(f"Processing manufacturer chart file: {filename}")
+                            
+                            # Check if file is accessible (not a SharePoint placeholder)
+                            import os
+                            if not os.path.exists(filepath):
+                                logging.warning(f"File not found or not accessible: {filename}")
+                                continue
+                            
+                            # Check file size - if it's 0 or very small, it might be a placeholder
+                            file_size = os.path.getsize(filepath)
+                            if file_size < 1024:  # Less than 1KB
+                                logging.warning(f"File appears to be a placeholder or empty (size: {file_size} bytes): {filename}")
+                                continue
+                            
                             if 'acura' in filename.lower():
                                 logging.info(f"Found potential Acura file: {filename}")
                             
@@ -1895,10 +1908,14 @@ class ManageDataListsDialog(ModernDialog):
                                 # Try to read the "Model Version" sheet first
                                 df = pd.read_excel(filepath, sheet_name="Model Version")
                                 logging.info(f"Found 'Model Version' sheet in {filename}")
-                            except:
+                            except Exception as sheet_error:
                                 # If "Model Version" sheet doesn't exist, use the first sheet
-                                df = pd.read_excel(filepath)
-                                logging.info(f"Using first sheet for {filename}")
+                                try:
+                                    df = pd.read_excel(filepath)
+                                    logging.info(f"Using first sheet for {filename}")
+                                except Exception as read_error:
+                                    logging.error(f"Cannot read Excel file {filename}: {str(read_error)}")
+                                    continue
                             
                             if df.empty:
                                 logging.warning(f"{filename} is empty.")
@@ -1915,6 +1932,8 @@ class ManageDataListsDialog(ModernDialog):
                             
                         except Exception as e:
                             logging.error(f"Error loading manufacturer chart from {filename}: {str(e)}")
+                            import traceback
+                            logging.error(traceback.format_exc())
                         self.parent.progress_bar.setValue(i + 1)
                 else:
                     # Process individual files for other data types
@@ -2043,28 +2062,30 @@ class ManageDataListsDialog(ModernDialog):
                 'calibrationprerequisites': 'Calibration_Pre_Requisites'
             }
             
+            # Log normalized column names for debugging
+            logging.info(f"Normalized DataFrame columns: {df.columns.tolist()}")
+            
             # Prepare data for insertion
             records = []
             for _, row in df.iterrows():
                 record = {}
                 for normalized_col, db_col in column_mapping.items():
-                    # Find matching column in dataframe
-                    matching_col = None
-                    for col in df.columns:
-                        if normalized_col in col.lower():
-                            matching_col = col
-                            break
-                    
-                    if matching_col and matching_col in row:
-                        value = row[matching_col]
+                    # Since columns are already normalized, do exact match
+                    if normalized_col in df.columns:
+                        value = row[normalized_col]
                         if pd.isna(value):
-                            record[db_col] = None
+                            record[db_col] = ''  # Use empty string for consistency
                         else:
-                            record[db_col] = str(value)
+                            record[db_col] = str(value).strip()
                     else:
-                        record[db_col] = None
+                        record[db_col] = ''
+                        logging.warning(f"Column '{normalized_col}' not found in DataFrame")
                 
                 records.append(record)
+            
+            # Log first record for debugging
+            if records:
+                logging.info(f"First CMC record to insert: {records[0]}")
             
             # Insert data
             if records:
@@ -2077,6 +2098,7 @@ class ManageDataListsDialog(ModernDialog):
                 
                 conn.commit()
                 conn.close()
+                logging.info(f"Successfully inserted {len(records)} CMC records")
                 return "Data loaded successfully"
             else:
                 conn.close()
@@ -2720,21 +2742,33 @@ class ModernAnalyzerApp(ModernMainWindow):
         model_layout.addWidget(self.model_lock_button)
         search_layout.addWidget(model_container)
 
-        # Search container (label + line edit)
+        # Search container (label + line edit + button) - expands with window
         search_container = QWidget()
         search_container.setStyleSheet(field_container_style)
         search_container_layout = QHBoxLayout(search_container)
         search_container_layout.setSpacing(8)
         search_container_layout.setContentsMargins(10, 6, 10, 6)
+        
+        # Fixed width label
         search_label = QLabel("Search:")
+        search_label.setFixedWidth(100)
+        search_label.setStyleSheet("font-weight: bold;")
         search_container_layout.addWidget(search_label)
+        
+        # Expanding search bar
         self.search_bar = ModernLineEdit("Enter DTC code or description (searches Blacklist & Goldlist only)")
-        self.search_bar.setFixedWidth(260)
+        self.search_bar.setMinimumWidth(150)
         self.search_bar.setStyleSheet("padding: 6px 12px; font-size: 12px;")
         self.search_bar.returnPressed.connect(self.perform_search)
-        # Don't auto-search on every keystroke to avoid performance issues
         search_container_layout.addWidget(self.search_bar)
-        search_layout.addWidget(search_container)
+        
+        # Search button
+        search_button = ModernButton("🔍 Search", style="secondary")
+        search_button.setFixedWidth(150)
+        search_button.clicked.connect(self.perform_search)
+        search_container_layout.addWidget(search_button)
+        
+        search_layout.addWidget(search_container, 1)  # Stretch factor of 1 to expand
 
         main_layout.addWidget(search_card)
 
@@ -3479,9 +3513,19 @@ class ModernAnalyzerApp(ModernMainWindow):
                     logging.debug(f"Acura variants found: {acura_variants}")
                 logging.debug(f"Available models: {list(unique_models)[:10]}")  # Show first 10
                 
-                # Filter the dataframe - handle None values properly
+                # Filter the dataframe - handle None values and float years properly
+                # Convert Year to int first to remove .0, then to string
+                def normalize_year(val):
+                    if pd.isna(val) or val == '':
+                        return ''
+                    try:
+                        # Try to convert to float first, then to int to remove decimals
+                        return str(int(float(val)))
+                    except:
+                        return str(val).strip()
+                
                 filtered_df = df[
-                    (df['Year'].fillna('').astype(str).str.strip().str.upper() == search_year) &
+                    (df['Year'].apply(normalize_year).str.upper() == search_year) &
                     (df['Make'].fillna('').astype(str).str.strip().str.upper() == search_make) &
                     (df['Model'].fillna('').astype(str).str.strip().str.upper() == search_model)
                 ]
@@ -4674,47 +4718,25 @@ class ModernAnalyzerApp(ModernMainWindow):
                 import logging
                 logging.warning(f"No saved path found for {config_type}")
         
-        # Special handling for manufacturer_chart - load ALL files in the directory
+        # Check if manufacturer_chart data exists in database (don't reload from files)
         manufacturer_chart_path = load_path_from_db('manufacturer_chart', self.db_path)
         if manufacturer_chart_path:
             try:
-                logging.info("Loading all manufacturer chart files...")
-                
-                # Clear existing manufacturer chart data
+                # Check if we have data in the database
                 conn = sqlite3.connect(self.db_path)
                 cursor = conn.cursor()
-                cursor.execute("DELETE FROM manufacturer_chart")
-                conn.commit()
+                cursor.execute("SELECT COUNT(*) FROM manufacturer_chart")
+                count = cursor.fetchone()[0]
                 conn.close()
-                logging.info("Cleared existing manufacturer chart data")
                 
-                # Get all Excel files in the directory
-                files = self.get_valid_excel_files(manufacturer_chart_path)
-                if files:
-                    files_loaded = 0
-                    for filename, filepath in files.items():
-                        try:
-                            logging.info(f"Processing manufacturer chart file: {filename}")
-                            # Check if this might be an Acura file
-                            if 'acura' in filename.lower():
-                                logging.info(f"Found potential Acura file: {filename}")
-                            result = load_excel_data_to_db(filepath, 'manufacturer_chart', db_path=self.db_path, sheet_index=0)
-                            if result == "Data loaded successfully":
-                                files_loaded += 1
-                                logging.info(f"Loaded manufacturer chart data from: {filename}")
-                            else:
-                                logging.warning(f"Failed to load data from {filename}: {result}")
-                        except Exception as e:
-                            logging.error(f"Error loading manufacturer chart from {filename}: {str(e)}")
-                    
-                    if files_loaded > 0:
-                        any_data_loaded = True
-                        logging.info(f"Successfully loaded manufacturer chart data from {files_loaded} files")
+                if count > 0:
+                    logging.info(f"Manufacturer chart data already in database ({count} records)")
+                    any_data_loaded = True
                 else:
-                    logging.warning("No Excel files found in manufacturer chart directory")
+                    logging.warning("No manufacturer chart data in database. Please use 'Save and Load' to load data.")
                     
             except Exception as e:
-                logging.error(f"Error loading manufacturer chart data: {str(e)}")
+                logging.error(f"Error checking manufacturer chart data: {str(e)}")
         
         if any_data_loaded:
             msg = self.create_styled_messagebox("Success", "All data refreshed successfully!", QMessageBox.Information)
@@ -4791,28 +4813,30 @@ class ModernAnalyzerApp(ModernMainWindow):
                 'calibrationprerequisites': 'Calibration_Pre_Requisites'
             }
             
+            # Log normalized column names for debugging
+            logging.info(f"Normalized DataFrame columns: {df.columns.tolist()}")
+            
             # Prepare data for insertion
             records = []
             for _, row in df.iterrows():
                 record = {}
                 for normalized_col, db_col in column_mapping.items():
-                    # Find matching column in dataframe
-                    matching_col = None
-                    for col in df.columns:
-                        if normalized_col in col.lower():
-                            matching_col = col
-                            break
-                    
-                    if matching_col and matching_col in row:
-                        value = row[matching_col]
+                    # Since columns are already normalized, do exact match
+                    if normalized_col in df.columns:
+                        value = row[normalized_col]
                         if pd.isna(value):
-                            record[db_col] = None
+                            record[db_col] = ''  # Use empty string for consistency
                         else:
-                            record[db_col] = str(value)
+                            record[db_col] = str(value).strip()
                     else:
-                        record[db_col] = None
+                        record[db_col] = ''
+                        logging.warning(f"Column '{normalized_col}' not found in DataFrame")
                 
                 records.append(record)
+            
+            # Log first record for debugging
+            if records:
+                logging.info(f"First CMC record to insert: {records[0]}")
             
             # Insert data
             if records:
@@ -4825,6 +4849,7 @@ class ModernAnalyzerApp(ModernMainWindow):
                 
                 conn.commit()
                 conn.close()
+                logging.info(f"Successfully inserted {len(records)} CMC records")
                 return "Data loaded successfully"
             else:
                 conn.close()
