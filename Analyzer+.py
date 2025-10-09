@@ -645,18 +645,66 @@ def load_excel_data_to_db(excel_path, table_name, db_path='data.db', sheet_index
             conn.close()
             return "Data loaded successfully"
         elif table_name in ['blacklist', 'goldlist']:
-            expected_map = {
-                'genericSystemName': 'generic system name',
-                'dtcCode': 'dtc code',
-                'dtcDescription': 'dtc description',
-                'dtcSys': 'dtc sys',
-                'carMake': 'car make',
-                'comments': 'comments'
-            }
-            expected_norm = {k: normalize_col(v) for k, v in expected_map.items()}
-            rename_dict = {v: k for k, v in expected_norm.items()}
-            df = df.rename(columns=rename_dict)
-            df = df[list(expected_map.keys())]
+            # More flexible column mapping for goldlist/blacklist files
+            df.columns = df.columns.str.strip()
+            
+            # Try to find columns with flexible matching
+            column_mapping = {}
+            
+            # Map columns with flexible matching
+            for col in df.columns:
+                col_lower = col.lower().strip()
+                
+                # DTC Code variations
+                if any(term in col_lower for term in ['dtc', 'code', 'dtc code', 'dtccode']):
+                    column_mapping['dtcCode'] = col
+                # Generic System Name variations
+                elif any(term in col_lower for term in ['generic', 'system', 'name', 'generic system name']):
+                    column_mapping['genericSystemName'] = col
+                # DTC Description variations
+                elif any(term in col_lower for term in ['description', 'dtc description', 'dtcdescription']):
+                    column_mapping['dtcDescription'] = col
+                # DTC Sys variations
+                elif any(term in col_lower for term in ['dtc sys', 'dtcsys', 'system']):
+                    column_mapping['dtcSys'] = col
+                # Car Make variations
+                elif any(term in col_lower for term in ['car', 'make', 'car make', 'carmake', 'manufacturer']):
+                    column_mapping['carMake'] = col
+                # Comments variations
+                elif any(term in col_lower for term in ['comment', 'comments', 'notes', 'note']):
+                    column_mapping['comments'] = col
+            
+            # Check if we found the required columns
+            required_columns = ['dtcCode', 'genericSystemName', 'dtcDescription', 'dtcSys', 'carMake', 'comments']
+            missing_columns = [col for col in required_columns if col not in column_mapping]
+            
+            if missing_columns:
+                # Try to use the first few columns if mapping fails
+                available_cols = list(df.columns)
+                if len(available_cols) >= 6:
+                    # Use first 6 columns as fallback
+                    column_mapping = {
+                        'dtcCode': available_cols[0] if len(available_cols) > 0 else 'Column1',
+                        'genericSystemName': available_cols[1] if len(available_cols) > 1 else 'Column2',
+                        'dtcDescription': available_cols[2] if len(available_cols) > 2 else 'Column3',
+                        'dtcSys': available_cols[3] if len(available_cols) > 3 else 'Column4',
+                        'carMake': available_cols[4] if len(available_cols) > 4 else 'Column5',
+                        'comments': available_cols[5] if len(available_cols) > 5 else 'Column6'
+                    }
+                    logging.warning(f"Using fallback column mapping for {table_name}: {column_mapping}")
+                else:
+                    raise ValueError(f"Not enough columns in {table_name} file. Found {len(available_cols)} columns, need at least 6.")
+            
+            # Rename columns
+            df = df.rename(columns=column_mapping)
+            
+            # Ensure all required columns exist
+            for col in required_columns:
+                if col not in df.columns:
+                    df[col] = ''  # Add empty column if missing
+            
+            # Select only the required columns
+            df = df[required_columns]
             df = df.where(pd.notnull(df), None)
             df.dropna(how='all', inplace=True)
             df['dtcCode'] = df['dtcCode'].astype(str)
