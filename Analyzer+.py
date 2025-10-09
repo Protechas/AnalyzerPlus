@@ -4908,21 +4908,6 @@ class ModernAnalyzerApp(ModernMainWindow):
             logging.error(f"Error loading manufacturer chart data: {str(e)}")
             return f"Error: {str(e)}"
 
-    def load_configurations(self):
-        import logging
-        logging.debug("Loading configurations...")
-        for config_type in ['blacklist', 'goldlist', 'prequal', 'mag_glass', 'carsys']:
-            data = load_configuration(config_type, self.db_path)
-            self.data[config_type] = data if data else []
-            logging.debug(f"Loaded {len(data)} items for {config_type}")
-        # Debug: print first few prequal items and their types
-        prequal_sample = self.data['prequal'][:3]
-        logging.debug(f"Sample prequal data: {prequal_sample}")
-        for i, item in enumerate(prequal_sample):
-            logging.debug(f"prequal[{i}] type: {type(item)}")
-        if 'prequal' in self.data:
-            self.populate_dropdowns()
-        self.check_data_loaded()
 
     def check_data_loaded(self):
         if not self.data['prequal']:
