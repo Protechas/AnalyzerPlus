@@ -517,8 +517,7 @@ def handle_error(func, path, exc_info):
     logging.error(f"Error in {func}: {path} - {exc_info}")
 
 def save_path_to_db(config_type, folder_path, db_path='data.db'):
-    """Save path to database without creating backups to avoid OneDrive sync issues"""
-    import sqlite3, logging
+    import os, shutil, sqlite3, logging
     conn = sqlite3.connect(db_path)
     try:
         cursor = conn.cursor()
@@ -527,7 +526,28 @@ def save_path_to_db(config_type, folder_path, db_path='data.db'):
             VALUES (?, ?)
         ''', (config_type, folder_path))
         conn.commit()
-        logging.info(f"Path saved to database: {config_type} -> {folder_path}")
+
+        # Normalize paths to avoid issues with backslashes
+        backup_path = os.path.normpath(os.path.join(folder_path, f"{config_type}_backup"))
+        folder_path = os.path.normpath(folder_path)
+
+        # Handle existing backup - remove it if it exists
+        if os.path.exists(backup_path):
+            logging.info(f"Backup path already exists: {backup_path}. Removing to overwrite.")
+            try:
+                shutil.rmtree(backup_path)
+            except (PermissionError, OSError) as e:
+                logging.error(f"Error removing existing backup: {e}. Operations may be incomplete.")
+
+        # Create the new backup
+        logging.info(f"Creating backup from {folder_path} to {backup_path}.")
+        try:
+            shutil.copytree(folder_path, backup_path, symlinks=False)
+            logging.info(f"Backup successfully created at {backup_path}")
+        except shutil.Error as e:
+            logging.warning(f"Some errors during backup: {e}")
+        except OSError as e:
+            logging.error(f"OS error during copy operation: {e}")
     except sqlite3.Error as e:
         logging.error(f"Failed to save path to database: {e}")
     finally:
@@ -645,66 +665,18 @@ def load_excel_data_to_db(excel_path, table_name, db_path='data.db', sheet_index
             conn.close()
             return "Data loaded successfully"
         elif table_name in ['blacklist', 'goldlist']:
-            # More flexible column mapping for goldlist/blacklist files
-            df.columns = df.columns.str.strip()
-            
-            # Try to find columns with flexible matching
-            column_mapping = {}
-            
-            # Map columns with flexible matching
-            for col in df.columns:
-                col_lower = col.lower().strip()
-                
-                # DTC Code variations
-                if any(term in col_lower for term in ['dtc', 'code', 'dtc code', 'dtccode']):
-                    column_mapping['dtcCode'] = col
-                # Generic System Name variations
-                elif any(term in col_lower for term in ['generic', 'system', 'name', 'generic system name']):
-                    column_mapping['genericSystemName'] = col
-                # DTC Description variations
-                elif any(term in col_lower for term in ['description', 'dtc description', 'dtcdescription']):
-                    column_mapping['dtcDescription'] = col
-                # DTC Sys variations
-                elif any(term in col_lower for term in ['dtc sys', 'dtcsys', 'system']):
-                    column_mapping['dtcSys'] = col
-                # Car Make variations
-                elif any(term in col_lower for term in ['car', 'make', 'car make', 'carmake', 'manufacturer']):
-                    column_mapping['carMake'] = col
-                # Comments variations
-                elif any(term in col_lower for term in ['comment', 'comments', 'notes', 'note']):
-                    column_mapping['comments'] = col
-            
-            # Check if we found the required columns
-            required_columns = ['dtcCode', 'genericSystemName', 'dtcDescription', 'dtcSys', 'carMake', 'comments']
-            missing_columns = [col for col in required_columns if col not in column_mapping]
-            
-            if missing_columns:
-                # Try to use the first few columns if mapping fails
-                available_cols = list(df.columns)
-                if len(available_cols) >= 6:
-                    # Use first 6 columns as fallback
-                    column_mapping = {
-                        'dtcCode': available_cols[0] if len(available_cols) > 0 else 'Column1',
-                        'genericSystemName': available_cols[1] if len(available_cols) > 1 else 'Column2',
-                        'dtcDescription': available_cols[2] if len(available_cols) > 2 else 'Column3',
-                        'dtcSys': available_cols[3] if len(available_cols) > 3 else 'Column4',
-                        'carMake': available_cols[4] if len(available_cols) > 4 else 'Column5',
-                        'comments': available_cols[5] if len(available_cols) > 5 else 'Column6'
-                    }
-                    logging.warning(f"Using fallback column mapping for {table_name}: {column_mapping}")
-                else:
-                    raise ValueError(f"Not enough columns in {table_name} file. Found {len(available_cols)} columns, need at least 6.")
-            
-            # Rename columns
-            df = df.rename(columns=column_mapping)
-            
-            # Ensure all required columns exist
-            for col in required_columns:
-                if col not in df.columns:
-                    df[col] = ''  # Add empty column if missing
-            
-            # Select only the required columns
-            df = df[required_columns]
+            expected_map = {
+                'genericSystemName': 'generic system name',
+                'dtcCode': 'dtc code',
+                'dtcDescription': 'dtc description',
+                'dtcSys': 'dtc sys',
+                'carMake': 'car make',
+                'comments': 'comments'
+            }
+            expected_norm = {k: normalize_col(v) for k, v in expected_map.items()}
+            rename_dict = {v: k for k, v in expected_norm.items()}
+            df = df.rename(columns=rename_dict)
+            df = df[list(expected_map.keys())]
             df = df.where(pd.notnull(df), None)
             df.dropna(how='all', inplace=True)
             df['dtcCode'] = df['dtcCode'].astype(str)
@@ -1831,7 +1803,7 @@ class ManageDataListsDialog(ModernDialog):
         clear_all_btn.clicked.connect(self.clear_all_data)
         button_row.addWidget(clear_all_btn)
 
-        save_btn = ModernButton("Save/Load Data", style="primary")
+        save_btn = ModernButton("Save & Load Data", style="primary")
         save_btn.clicked.connect(self.save_and_load)
         button_row.addWidget(save_btn)
 
@@ -2000,8 +1972,8 @@ class ManageDataListsDialog(ModernDialog):
                                 data_loaded = True
                         except Exception as e:
                             logging.error(f"Error loading {filename}: {str(e)}")
-                            if config_type != 'CarSys':
-                                QMessageBox.critical(self, "Load Error", f"Failed to load {filename}: {str(e)}")
+                        except Exception as e:
+                            logging.error(f"Error loading {filename}: {str(e)}")
                         self.parent.progress_bar.setValue(i + 1)
                 save_path_to_db(config_type, folder_path, self.parent.db_path)
                 if config_type == 'goldlist':
@@ -2018,16 +1990,6 @@ class ManageDataListsDialog(ModernDialog):
         self.parent.load_configurations()
         self.parent.populate_dropdowns()
         self.parent.check_data_loaded()
-        
-        # Force UI refresh for model dropdown after data loading
-        current_year = self.parent.year_dropdown.currentText()
-        current_make = self.parent.make_dropdown.currentText()
-        
-        if (current_year != "Select Year" and current_make != "Select Make" and 
-            current_make != "All"):
-            print(f"[DEBUG] Forcing model refresh for {current_year} {current_make}")
-            self.parent.populate_models(current_year, current_make)
-        
         msg = self.parent.create_styled_messagebox("Success", "Paths saved and data loaded successfully!", QMessageBox.Information)
         msg.exec_()
         self.accept()
@@ -4684,166 +4646,97 @@ class ModernAnalyzerApp(ModernMainWindow):
         self.load_configurations()
 
     def refresh_lists(self):
-        """Refresh lists by reloading data from saved paths - same as Save and Load button"""
         self.log_action(self.current_user, "Clicked Refresh Lists button")
         any_data_loaded = False
-        
+        last_processed_path = ""
         for config_type in ['blacklist', 'goldlist', 'prequal', 'mag_glass', 'CarSys', 'manufacturer_chart']:
             folder_path = load_path_from_db(config_type, self.db_path)
             if not folder_path and config_type in ['mag_glass', 'CarSys']:
                 folder_path = load_path_from_db('goldlist', self.db_path)
                 if folder_path:
                     save_path_to_db(config_type, folder_path, self.db_path)
-            
             if folder_path:
-                try:
-                    files = self.get_valid_excel_files(folder_path)
-                    if not files:
-                        if config_type != 'CarSys':
-                            QMessageBox.warning(self, "Load Error", f"No valid Excel files found in the {folder_path} directory for {config_type}.")
-                        continue
-
+                last_processed_path = folder_path
+                self.clear_data(config_type)
+                import logging
+                logging.info(f"Cleared existing data for {config_type}")
+                files = self.get_valid_excel_files(folder_path)
+                if not files:
+                    if config_type != 'CarSys':
+                        QMessageBox.warning(self, "Load Error", f"No valid Excel files found in the directory for {config_type}.")
+                    continue
+                data_loaded = False
+                if hasattr(self, 'progress_bar'):
                     self.progress_bar.setVisible(True)
                     self.progress_bar.setMaximum(len(files))
                     self.progress_bar.setValue(0)
-
-                    self.clear_data(config_type)
-                    if config_type == "goldlist":
-                        self.clear_data("CarSys")
-                        self.clear_data("mag_glass")
-
-                    data_loaded = False
-                    
-                    # Special handling for manufacturer_chart - use simple pandas approach like prequals
-                    import logging
-                    logging.info(f"Processing config_type: {config_type}")
-                    if config_type == 'manufacturer_chart':
-                        logging.info("Loading manufacturer chart data using simple pandas approach...")
-                        
-                        # Clear existing manufacturer chart data
-                        conn = sqlite3.connect(self.db_path)
-                        cursor = conn.cursor()
-                        cursor.execute("DELETE FROM manufacturer_chart")
-                        conn.commit()
-                        conn.close()
-                        logging.info("Cleared existing manufacturer chart data")
-                        
-                        # Process each file like prequals
-                        for i, (filename, filepath) in enumerate(files.items()):
-                            try:
-                                logging.info(f"Processing manufacturer chart file: {filename}")
-                                
-                                # Check if file is accessible (not a SharePoint placeholder)
-                                import os
-                                if not os.path.exists(filepath):
-                                    logging.warning(f"File not found or not accessible: {filename}")
-                                    continue
-                                
-                                # Check file size - if it's 0 or very small, it might be a placeholder
-                                file_size = os.path.getsize(filepath)
-                                if file_size < 1024:  # Less than 1KB
-                                    logging.warning(f"File appears to be a placeholder or empty (size: {file_size} bytes): {filename}")
-                                    continue
-                                
-                                if 'lexus' in filename.lower():
-                                    logging.info(f"Found potential Lexus file: {filename}")
-                                
-                                # Check for "Model Version" sheet first, then fall back to first sheet
-                                try:
-                                    # Try to read the "Model Version" sheet first
-                                    import pandas as pd
-                                    df = pd.read_excel(filepath, sheet_name="Model Version")
-                                    logging.info(f"Found 'Model Version' sheet in {filename}")
-                                except Exception as sheet_error:
-                                    # If "Model Version" sheet doesn't exist, use the first sheet
-                                    try:
-                                        df = pd.read_excel(filepath)
-                                        logging.info(f"Using first sheet for {filename}")
-                                    except Exception as read_error:
-                                        logging.error(f"Cannot read Excel file {filename}: {str(read_error)}")
-                                        continue
-                                
-                                if df.empty:
-                                    logging.warning(f"{filename} is empty.")
-                                    continue
-                                
-                                # Log the columns found in this file
-                                logging.info(f"Columns in {filename}: {list(df.columns)}")
-                                
-                                # Convert to records and save to manufacturer_chart table
-                                data = df.to_dict(orient='records')
-                                self.save_manufacturer_chart_data(data, self.db_path)
+                for i, (filename, filepath) in enumerate(files.items()):
+                    try:
+                        if config_type in ['blacklist', 'goldlist']:
+                            result = load_excel_data_to_db(filepath, config_type, db_path=self.db_path, sheet_index=1)
+                            if result == "Data loaded successfully":
                                 data_loaded = True
-                                logging.info(f"Loaded manufacturer chart data from: {filename}")
-                                
-                            except Exception as e:
-                                logging.error(f"Error loading manufacturer chart from {filename}: {str(e)}")
-                                import traceback
-                                logging.error(traceback.format_exc())
-                            self.progress_bar.setValue(i + 1)
-                    else:
-                        # Process individual files for other data types
-                        for i, (filename, filepath) in enumerate(files.items()):
-                            try:
-                                if config_type in ['blacklist', 'goldlist']:
-                                    result = load_excel_data_to_db(filepath, config_type, db_path=self.db_path, sheet_index=1)
-                                    if result == "Data loaded successfully":
-                                        data_loaded = True
-                                        if config_type == 'goldlist':
-                                            load_carsys_data_to_db(filepath, table_name='CarSys', db_path=self.db_path)
-                                            load_mag_glass_data(filepath, table_name='mag_glass', db_path=self.db_path)
-                                elif config_type == 'prequal':
-                                    import pandas as pd
-                                    df = pd.read_excel(filepath)
-                                    if df.empty:
-                                        logging.warning(f"{filename} is empty.")
-                                        continue
-                                    data = df.to_dict(orient='records')
-                                    update_configuration(config_type, folder_path, data, self.db_path)
-                                    data_loaded = True
-                                elif config_type == 'mag_glass':
-                                    result = load_mag_glass_data(filepath, config_type, db_path=self.db_path)
-                                    if result == "Data loaded successfully":
-                                        data_loaded = True
-                                elif config_type == 'CarSys':
-                                    result = load_excel_data_to_db(filepath, config_type, db_path=self.db_path, sheet_index=0)
-                                    if result == "Data loaded successfully":
-                                        data_loaded = True
-                                else:
-                                    import pandas as pd
-                                    df = pd.read_excel(filepath)
-                                    if df.empty:
-                                        logging.warning(f"{filename} is empty.")
-                                        continue
-                                    data = df.to_dict(orient='records')
-                                    update_configuration(config_type, folder_path, data, self.db_path)
-                                    data_loaded = True
-                            except Exception as e:
-                                logging.error(f"Error loading {filename}: {str(e)}")
-                                if config_type != 'CarSys':
-                                    QMessageBox.critical(self, "Load Error", f"Failed to load {filename}: {str(e)}")
-                            self.progress_bar.setValue(i + 1)
-                    
-                    # Save path to database (same as save_and_load)
-                    save_path_to_db(config_type, folder_path, self.db_path)
-                    if config_type == 'goldlist':
-                        save_path_to_db('CarSys', folder_path, self.db_path)
-                        save_path_to_db('mag_glass', folder_path, self.db_path)
-                    
+                        elif config_type == 'mag_glass':
+                            result = load_mag_glass_data(filepath, config_type, db_path=self.db_path)
+                            if result == "Data loaded successfully":
+                                data_loaded = True
+                        elif config_type == 'CarSys':
+                            result = load_excel_data_to_db(filepath, config_type, db_path=self.db_path, sheet_index=0)
+                            if result == "Data loaded successfully":
+                                data_loaded = True
+                        elif config_type == 'manufacturer_chart':
+                            # For manufacturer chart, we need to load ALL files in the directory
+                            # This is different from other data types that process one file at a time
+                            continue  # Skip individual file processing - we'll handle all files at once
+                        else:
+                            import pandas as pd
+                            df = pd.read_excel(filepath)
+                            if df.empty:
+                                import logging
+                                logging.warning(f"{filename} is empty.")
+                                continue
+                            data = df.to_dict(orient='records')
+                            update_configuration(config_type, folder_path, data, self.db_path)
+                            data_loaded = True
+                    except Exception as e:
+                        import logging
+                        logging.error(f"Error loading {filename}: {str(e)}")
+                        if config_type != 'CarSys':
+                            QMessageBox.critical(self, "Load Error", f"Failed to load {filename}: {str(e)}")
+                    if hasattr(self, 'progress_bar'):
+                        self.progress_bar.setValue(i + 1)
+                if hasattr(self, 'progress_bar'):
                     self.progress_bar.setVisible(False)
-                    if data_loaded:
-                        any_data_loaded = True
-                        self.load_configurations()
-                        self.populate_dropdowns()
-                        self.check_data_loaded()
-                        if hasattr(self, 'status_bar'):
-                            self.status_bar.showMessage(f"Data refreshed from: {folder_path}")
-                            
-                except Exception as e:
-                    logging.error(f"Error processing {config_type}: {str(e)}")
-                    QMessageBox.critical(self, "Load Error", f"Failed to process {config_type}: {str(e)}")
+                if data_loaded:
+                    any_data_loaded = True
+                    self.load_configurations()
+                    self.populate_dropdowns()
+                    self.check_data_loaded()
+                    if hasattr(self, 'status_bar'):
+                        self.status_bar.showMessage(f"Data refreshed from: {folder_path}")
             else:
+                import logging
                 logging.warning(f"No saved path found for {config_type}")
+        
+        # Check if manufacturer_chart data exists in database (don't reload from files)
+        manufacturer_chart_path = load_path_from_db('manufacturer_chart', self.db_path)
+        if manufacturer_chart_path:
+            try:
+                # Check if we have data in the database
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM manufacturer_chart")
+                count = cursor.fetchone()[0]
+                conn.close()
+                
+                if count > 0:
+                    logging.info(f"Manufacturer chart data already in database ({count} records)")
+                    any_data_loaded = True
+                else:
+                    logging.warning("No manufacturer chart data in database. Please use 'Save and Load' to load data.")
+                    
+            except Exception as e:
+                logging.error(f"Error checking manufacturer chart data: {str(e)}")
         
         if any_data_loaded:
             msg = self.create_styled_messagebox("Success", "All data refreshed successfully!", QMessageBox.Information)
@@ -4966,6 +4859,21 @@ class ModernAnalyzerApp(ModernMainWindow):
             logging.error(f"Error loading manufacturer chart data: {str(e)}")
             return f"Error: {str(e)}"
 
+    def load_configurations(self):
+        import logging
+        logging.debug("Loading configurations...")
+        for config_type in ['blacklist', 'goldlist', 'prequal', 'mag_glass', 'carsys']:
+            data = load_configuration(config_type, self.db_path)
+            self.data[config_type] = data if data else []
+            logging.debug(f"Loaded {len(data)} items for {config_type}")
+        # Debug: print first few prequal items and their types
+        prequal_sample = self.data['prequal'][:3]
+        logging.debug(f"Sample prequal data: {prequal_sample}")
+        for i, item in enumerate(prequal_sample):
+            logging.debug(f"prequal[{i}] type: {type(item)}")
+        if 'prequal' in self.data:
+            self.populate_dropdowns()
+        self.check_data_loaded()
 
     def check_data_loaded(self):
         if not self.data['prequal']:
@@ -5856,8 +5764,6 @@ class ModernAnalyzerApp(ModernMainWindow):
         """Update year dropdown to show only years that match current make and model selections."""
         try:
             valid_years = set()
-            
-            # Get years from prequal data
             for item in self.data['prequal']:
                 try:
                     if not self.has_valid_prequal(item) or pd.isna(item.get('Year')):
@@ -5879,7 +5785,6 @@ class ModernAnalyzerApp(ModernMainWindow):
             
             # Get years from manufacturer chart data
             try:
-                from database_utils import get_unique_years_from_manufacturer_chart
                 if make_to_use not in ["Select Make", "All", ""]:
                     # Get all years for the selected make from manufacturer chart
                     conn = sqlite3.connect(self.db_path)
@@ -5904,11 +5809,7 @@ class ModernAnalyzerApp(ModernMainWindow):
             except Exception as e:
                 logging.error(f"Error getting manufacturer chart years: {e}")
             
-            # Handle float years like '2017.0' by converting to int first
-            def year_sort_key(year_int):
-                return year_int
-            
-            valid_years = sorted(valid_years, key=year_sort_key, reverse=True)
+            valid_years = sorted(valid_years, reverse=True)
             
             # Store current selection
             current_year = self.year_dropdown.currentText()
@@ -5934,8 +5835,6 @@ class ModernAnalyzerApp(ModernMainWindow):
         """Update make dropdown to show only makes that match current year and model selections."""
         try:
             valid_makes = set()
-            
-            # Get makes from prequal data
             for item in self.data['prequal']:
                 try:
                     if not self.has_valid_prequal(item):
@@ -6004,8 +5903,6 @@ class ModernAnalyzerApp(ModernMainWindow):
         """Update model dropdown to show only models that match current year and make selections."""
         try:
             valid_models = set()
-            
-            # Get models from prequal data
             for item in self.data['prequal']:
                 try:
                     if not self.has_valid_prequal(item):
@@ -6993,6 +6890,8 @@ class VehicleCompareDialog(ModernDialog):
                 """
         
         return html
+
+# ... existing code ...
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
