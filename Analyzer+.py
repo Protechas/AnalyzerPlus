@@ -5964,8 +5964,15 @@ class ModernAnalyzerApp(ModernMainWindow):
                         continue
                     
                     # Check if this item matches our current selections
-                    year_matches = (year_to_use in ["Select Year", ""] or 
-                                  str(item.get('Year', '')).strip() == str(year_to_use).strip())
+                    # Handle year comparison with proper type conversion
+                    try:
+                        item_year = int(float(item.get('Year', '')))
+                        selected_year = int(float(year_to_use)) if year_to_use not in ["Select Year", ""] else None
+                        year_matches = (selected_year is None or item_year == selected_year)
+                    except (ValueError, TypeError):
+                        year_matches = (year_to_use in ["Select Year", ""] or 
+                                      str(item.get('Year', '')).strip() == str(year_to_use).strip())
+                    
                     make_matches = (make_to_use in ["Select Make", "All", ""] or 
                                   str(item.get('Make', '')).strip() == str(make_to_use).strip())
                     
