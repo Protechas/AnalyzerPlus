@@ -1970,6 +1970,16 @@ class ManageDataListsDialog(ModernDialog):
         self.parent.load_configurations()
         self.parent.populate_dropdowns()
         self.parent.check_data_loaded()
+        
+        # Force UI refresh for model dropdown after data loading
+        current_year = self.parent.year_dropdown.currentText()
+        current_make = self.parent.make_dropdown.currentText()
+        
+        if (current_year != "Select Year" and current_make != "Select Make" and 
+            current_make != "All"):
+            print(f"[DEBUG] Forcing model refresh for {current_year} {current_make}")
+            self.parent.populate_models(current_year, current_make)
+        
         msg = self.parent.create_styled_messagebox("Success", "Paths saved and data loaded successfully!", QMessageBox.Information)
         msg.exec_()
         self.accept()
