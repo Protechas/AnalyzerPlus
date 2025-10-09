@@ -517,7 +517,8 @@ def handle_error(func, path, exc_info):
     logging.error(f"Error in {func}: {path} - {exc_info}")
 
 def save_path_to_db(config_type, folder_path, db_path='data.db'):
-    import os, shutil, sqlite3, logging
+    """Save path to database without creating backups to avoid OneDrive sync issues"""
+    import sqlite3, logging
     conn = sqlite3.connect(db_path)
     try:
         cursor = conn.cursor()
@@ -526,28 +527,7 @@ def save_path_to_db(config_type, folder_path, db_path='data.db'):
             VALUES (?, ?)
         ''', (config_type, folder_path))
         conn.commit()
-
-        # Normalize paths to avoid issues with backslashes
-        backup_path = os.path.normpath(os.path.join(folder_path, f"{config_type}_backup"))
-        folder_path = os.path.normpath(folder_path)
-
-        # Handle existing backup - remove it if it exists
-        if os.path.exists(backup_path):
-            logging.info(f"Backup path already exists: {backup_path}. Removing to overwrite.")
-            try:
-                shutil.rmtree(backup_path)
-            except (PermissionError, OSError) as e:
-                logging.error(f"Error removing existing backup: {e}. Operations may be incomplete.")
-
-        # Create the new backup
-        logging.info(f"Creating backup from {folder_path} to {backup_path}.")
-        try:
-            shutil.copytree(folder_path, backup_path, symlinks=False)
-            logging.info(f"Backup successfully created at {backup_path}")
-        except shutil.Error as e:
-            logging.warning(f"Some errors during backup: {e}")
-        except OSError as e:
-            logging.error(f"OS error during copy operation: {e}")
+        logging.info(f"Path saved to database: {config_type} -> {folder_path}")
     except sqlite3.Error as e:
         logging.error(f"Failed to save path to database: {e}")
     finally:
@@ -1972,8 +1952,8 @@ class ManageDataListsDialog(ModernDialog):
                                 data_loaded = True
                         except Exception as e:
                             logging.error(f"Error loading {filename}: {str(e)}")
-                        except Exception as e:
-                            logging.error(f"Error loading {filename}: {str(e)}")
+                            if config_type != 'CarSys':
+                                QMessageBox.critical(self, "Load Error", f"Failed to load {filename}: {str(e)}")
                         self.parent.progress_bar.setValue(i + 1)
                 save_path_to_db(config_type, folder_path, self.parent.db_path)
                 if config_type == 'goldlist':
