@@ -1803,7 +1803,7 @@ class ManageDataListsDialog(ModernDialog):
         clear_all_btn.clicked.connect(self.clear_all_data)
         button_row.addWidget(clear_all_btn)
 
-        save_btn = ModernButton("Save & Load Data", style="primary")
+        save_btn = ModernButton("Save/Load Data", style="primary")
         save_btn.clicked.connect(self.save_and_load)
         button_row.addWidget(save_btn)
 
@@ -2619,7 +2619,7 @@ class ModernAnalyzerApp(ModernMainWindow):
         """)
         self.addToolBar(self.toolbar)
         self.add_toolbar_button("Manage Lists", self.open_admin, "admin_button")
-        self.add_toolbar_button("Refresh Lists", self.refresh_lists, "refresh_button")
+        # self.add_toolbar_button("Refresh Lists", self.refresh_lists, "refresh_button")  # Hidden for now
         self.add_toolbar_button("Compare Vehicles", self.open_compare_dialog, "compare_button")
         clear_button = ModernButton("Clear Filters", style="secondary")
         clear_button.clicked.connect(self.clear_filters)
@@ -4646,97 +4646,166 @@ class ModernAnalyzerApp(ModernMainWindow):
         self.load_configurations()
 
     def refresh_lists(self):
+        """Refresh lists by reloading data from saved paths - same as Save and Load button"""
         self.log_action(self.current_user, "Clicked Refresh Lists button")
         any_data_loaded = False
-        last_processed_path = ""
+        
         for config_type in ['blacklist', 'goldlist', 'prequal', 'mag_glass', 'CarSys', 'manufacturer_chart']:
             folder_path = load_path_from_db(config_type, self.db_path)
             if not folder_path and config_type in ['mag_glass', 'CarSys']:
                 folder_path = load_path_from_db('goldlist', self.db_path)
                 if folder_path:
                     save_path_to_db(config_type, folder_path, self.db_path)
+            
             if folder_path:
-                last_processed_path = folder_path
-                self.clear_data(config_type)
-                import logging
-                logging.info(f"Cleared existing data for {config_type}")
-                files = self.get_valid_excel_files(folder_path)
-                if not files:
-                    if config_type != 'CarSys':
-                        QMessageBox.warning(self, "Load Error", f"No valid Excel files found in the directory for {config_type}.")
-                    continue
-                data_loaded = False
-                if hasattr(self, 'progress_bar'):
+                try:
+                    files = self.get_valid_excel_files(folder_path)
+                    if not files:
+                        if config_type != 'CarSys':
+                            QMessageBox.warning(self, "Load Error", f"No valid Excel files found in the {folder_path} directory for {config_type}.")
+                        continue
+
                     self.progress_bar.setVisible(True)
                     self.progress_bar.setMaximum(len(files))
                     self.progress_bar.setValue(0)
-                for i, (filename, filepath) in enumerate(files.items()):
-                    try:
-                        if config_type in ['blacklist', 'goldlist']:
-                            result = load_excel_data_to_db(filepath, config_type, db_path=self.db_path, sheet_index=1)
-                            if result == "Data loaded successfully":
-                                data_loaded = True
-                        elif config_type == 'mag_glass':
-                            result = load_mag_glass_data(filepath, config_type, db_path=self.db_path)
-                            if result == "Data loaded successfully":
-                                data_loaded = True
-                        elif config_type == 'CarSys':
-                            result = load_excel_data_to_db(filepath, config_type, db_path=self.db_path, sheet_index=0)
-                            if result == "Data loaded successfully":
-                                data_loaded = True
-                        elif config_type == 'manufacturer_chart':
-                            # For manufacturer chart, we need to load ALL files in the directory
-                            # This is different from other data types that process one file at a time
-                            continue  # Skip individual file processing - we'll handle all files at once
-                        else:
-                            import pandas as pd
-                            df = pd.read_excel(filepath)
-                            if df.empty:
-                                import logging
-                                logging.warning(f"{filename} is empty.")
-                                continue
-                            data = df.to_dict(orient='records')
-                            update_configuration(config_type, folder_path, data, self.db_path)
-                            data_loaded = True
-                    except Exception as e:
-                        import logging
-                        logging.error(f"Error loading {filename}: {str(e)}")
-                        if config_type != 'CarSys':
-                            QMessageBox.critical(self, "Load Error", f"Failed to load {filename}: {str(e)}")
-                    if hasattr(self, 'progress_bar'):
-                        self.progress_bar.setValue(i + 1)
-                if hasattr(self, 'progress_bar'):
-                    self.progress_bar.setVisible(False)
-                if data_loaded:
-                    any_data_loaded = True
-                    self.load_configurations()
-                    self.populate_dropdowns()
-                    self.check_data_loaded()
-                    if hasattr(self, 'status_bar'):
-                        self.status_bar.showMessage(f"Data refreshed from: {folder_path}")
-            else:
-                import logging
-                logging.warning(f"No saved path found for {config_type}")
-        
-        # Check if manufacturer_chart data exists in database (don't reload from files)
-        manufacturer_chart_path = load_path_from_db('manufacturer_chart', self.db_path)
-        if manufacturer_chart_path:
-            try:
-                # Check if we have data in the database
-                conn = sqlite3.connect(self.db_path)
-                cursor = conn.cursor()
-                cursor.execute("SELECT COUNT(*) FROM manufacturer_chart")
-                count = cursor.fetchone()[0]
-                conn.close()
-                
-                if count > 0:
-                    logging.info(f"Manufacturer chart data already in database ({count} records)")
-                    any_data_loaded = True
-                else:
-                    logging.warning("No manufacturer chart data in database. Please use 'Save and Load' to load data.")
+
+                    self.clear_data(config_type)
+                    if config_type == "goldlist":
+                        self.clear_data("CarSys")
+                        self.clear_data("mag_glass")
+
+                    data_loaded = False
                     
-            except Exception as e:
-                logging.error(f"Error checking manufacturer chart data: {str(e)}")
+                    # Special handling for manufacturer_chart - use simple pandas approach like prequals
+                    import logging
+                    logging.info(f"Processing config_type: {config_type}")
+                    if config_type == 'manufacturer_chart':
+                        logging.info("Loading manufacturer chart data using simple pandas approach...")
+                        
+                        # Clear existing manufacturer chart data
+                        conn = sqlite3.connect(self.db_path)
+                        cursor = conn.cursor()
+                        cursor.execute("DELETE FROM manufacturer_chart")
+                        conn.commit()
+                        conn.close()
+                        logging.info("Cleared existing manufacturer chart data")
+                        
+                        # Process each file like prequals
+                        for i, (filename, filepath) in enumerate(files.items()):
+                            try:
+                                logging.info(f"Processing manufacturer chart file: {filename}")
+                                
+                                # Check if file is accessible (not a SharePoint placeholder)
+                                import os
+                                if not os.path.exists(filepath):
+                                    logging.warning(f"File not found or not accessible: {filename}")
+                                    continue
+                                
+                                # Check file size - if it's 0 or very small, it might be a placeholder
+                                file_size = os.path.getsize(filepath)
+                                if file_size < 1024:  # Less than 1KB
+                                    logging.warning(f"File appears to be a placeholder or empty (size: {file_size} bytes): {filename}")
+                                    continue
+                                
+                                if 'lexus' in filename.lower():
+                                    logging.info(f"Found potential Lexus file: {filename}")
+                                
+                                # Check for "Model Version" sheet first, then fall back to first sheet
+                                try:
+                                    # Try to read the "Model Version" sheet first
+                                    import pandas as pd
+                                    df = pd.read_excel(filepath, sheet_name="Model Version")
+                                    logging.info(f"Found 'Model Version' sheet in {filename}")
+                                except Exception as sheet_error:
+                                    # If "Model Version" sheet doesn't exist, use the first sheet
+                                    try:
+                                        df = pd.read_excel(filepath)
+                                        logging.info(f"Using first sheet for {filename}")
+                                    except Exception as read_error:
+                                        logging.error(f"Cannot read Excel file {filename}: {str(read_error)}")
+                                        continue
+                                
+                                if df.empty:
+                                    logging.warning(f"{filename} is empty.")
+                                    continue
+                                
+                                # Log the columns found in this file
+                                logging.info(f"Columns in {filename}: {list(df.columns)}")
+                                
+                                # Convert to records and save to manufacturer_chart table
+                                data = df.to_dict(orient='records')
+                                self.save_manufacturer_chart_data(data, self.db_path)
+                                data_loaded = True
+                                logging.info(f"Loaded manufacturer chart data from: {filename}")
+                                
+                            except Exception as e:
+                                logging.error(f"Error loading manufacturer chart from {filename}: {str(e)}")
+                                import traceback
+                                logging.error(traceback.format_exc())
+                            self.progress_bar.setValue(i + 1)
+                    else:
+                        # Process individual files for other data types
+                        for i, (filename, filepath) in enumerate(files.items()):
+                            try:
+                                if config_type in ['blacklist', 'goldlist']:
+                                    result = load_excel_data_to_db(filepath, config_type, db_path=self.db_path, sheet_index=1)
+                                    if result == "Data loaded successfully":
+                                        data_loaded = True
+                                        if config_type == 'goldlist':
+                                            load_carsys_data_to_db(filepath, table_name='CarSys', db_path=self.db_path)
+                                            load_mag_glass_data(filepath, table_name='mag_glass', db_path=self.db_path)
+                                elif config_type == 'prequal':
+                                    import pandas as pd
+                                    df = pd.read_excel(filepath)
+                                    if df.empty:
+                                        logging.warning(f"{filename} is empty.")
+                                        continue
+                                    data = df.to_dict(orient='records')
+                                    update_configuration(config_type, folder_path, data, self.db_path)
+                                    data_loaded = True
+                                elif config_type == 'mag_glass':
+                                    result = load_mag_glass_data(filepath, config_type, db_path=self.db_path)
+                                    if result == "Data loaded successfully":
+                                        data_loaded = True
+                                elif config_type == 'CarSys':
+                                    result = load_excel_data_to_db(filepath, config_type, db_path=self.db_path, sheet_index=0)
+                                    if result == "Data loaded successfully":
+                                        data_loaded = True
+                                else:
+                                    import pandas as pd
+                                    df = pd.read_excel(filepath)
+                                    if df.empty:
+                                        logging.warning(f"{filename} is empty.")
+                                        continue
+                                    data = df.to_dict(orient='records')
+                                    update_configuration(config_type, folder_path, data, self.db_path)
+                                    data_loaded = True
+                            except Exception as e:
+                                logging.error(f"Error loading {filename}: {str(e)}")
+                                if config_type != 'CarSys':
+                                    QMessageBox.critical(self, "Load Error", f"Failed to load {filename}: {str(e)}")
+                            self.progress_bar.setValue(i + 1)
+                    
+                    # Save path to database (same as save_and_load)
+                    save_path_to_db(config_type, folder_path, self.db_path)
+                    if config_type == 'goldlist':
+                        save_path_to_db('CarSys', folder_path, self.db_path)
+                        save_path_to_db('mag_glass', folder_path, self.db_path)
+                    
+                    self.progress_bar.setVisible(False)
+                    if data_loaded:
+                        any_data_loaded = True
+                        self.load_configurations()
+                        self.populate_dropdowns()
+                        self.check_data_loaded()
+                        if hasattr(self, 'status_bar'):
+                            self.status_bar.showMessage(f"Data refreshed from: {folder_path}")
+                            
+                except Exception as e:
+                    logging.error(f"Error processing {config_type}: {str(e)}")
+                    QMessageBox.critical(self, "Load Error", f"Failed to process {config_type}: {str(e)}")
+            else:
+                logging.warning(f"No saved path found for {config_type}")
         
         if any_data_loaded:
             msg = self.create_styled_messagebox("Success", "All data refreshed successfully!", QMessageBox.Information)
@@ -4886,28 +4955,60 @@ class ModernAnalyzerApp(ModernMainWindow):
             self.year_dropdown.setDisabled(False)
 
     def populate_dropdowns(self):
-        """Populate dropdowns with data"""
-        if not self.data['prequal']:
-            return
-            
-        # Get unique years and makes
-        years = get_unique_years(self.data['prequal'])
-        makes = get_unique_makes(self.data['prequal'])
+        """Populate dropdowns with data from both prequal and manufacturer chart"""
+        # Get data from both sources
+        prequal_years = []
+        prequal_makes = []
+        manufacturer_years = []
+        manufacturer_makes = []
         
-        logging.debug(f"Found years: {years}")
-        logging.debug(f"Found makes: {makes}")
+        # Get prequal data if available
+        if self.data['prequal']:
+            prequal_years = get_unique_years(self.data['prequal'])
+            prequal_makes = get_unique_makes(self.data['prequal'])
+            logging.debug(f"Prequal - Found years: {prequal_years}")
+            logging.debug(f"Prequal - Found makes: {prequal_makes}")
+        
+        # Get manufacturer chart data if available
+        try:
+            from database_utils import get_unique_years_from_manufacturer_chart, get_unique_makes_from_manufacturer_chart
+            manufacturer_years = get_unique_years_from_manufacturer_chart(self.db_path)
+            manufacturer_makes = get_unique_makes_from_manufacturer_chart(self.db_path)
+            logging.debug(f"Manufacturer Chart - Found years: {manufacturer_years}")
+            logging.debug(f"Manufacturer Chart - Found makes: {manufacturer_makes}")
+        except Exception as e:
+            logging.error(f"Error getting manufacturer chart data: {e}")
+        
+        # Combine and deduplicate years and makes
+        all_years = list(set(prequal_years + manufacturer_years))
+        all_makes = list(set(prequal_makes + manufacturer_makes))
+        
+        # Sort years in descending order (newest first)
+        # Handle float years like '2017.0' by converting to int first
+        def year_sort_key(year_str):
+            try:
+                return int(float(year_str))
+            except (ValueError, TypeError):
+                return 0
+        
+        all_years.sort(key=year_sort_key, reverse=True)
+        # Sort makes alphabetically
+        all_makes.sort()
+        
+        logging.debug(f"Combined - Found years: {all_years}")
+        logging.debug(f"Combined - Found makes: {all_makes}")
         
         # Clear and populate year dropdown
         self.year_dropdown.clear()
         self.year_dropdown.addItem("Select Year")
-        for year in years:
+        for year in all_years:
             self.year_dropdown.addItem(year)
             
         # Clear and populate make dropdown
         self.make_dropdown.clear()
         self.make_dropdown.addItem("Select Make")
         self.make_dropdown.addItem("All")  # Keep the "All" option
-        for make in makes:
+        for make in all_makes:
             self.make_dropdown.addItem(make)
             
         # Clear model dropdown
@@ -5732,6 +5833,8 @@ class ModernAnalyzerApp(ModernMainWindow):
         """Update year dropdown to show only years that match current make and model selections."""
         try:
             valid_years = set()
+            
+            # Get years from prequal data
             for item in self.data['prequal']:
                 try:
                     if not self.has_valid_prequal(item) or pd.isna(item.get('Year')):
@@ -5751,7 +5854,38 @@ class ModernAnalyzerApp(ModernMainWindow):
                 except (ValueError, TypeError, KeyError):
                     continue
             
-            valid_years = sorted(valid_years, reverse=True)
+            # Get years from manufacturer chart data
+            try:
+                from database_utils import get_unique_years_from_manufacturer_chart
+                if make_to_use not in ["Select Make", "All", ""]:
+                    # Get all years for the selected make from manufacturer chart
+                    conn = sqlite3.connect(self.db_path)
+                    cursor = conn.cursor()
+                    if model_to_use not in ["Select Model", ""]:
+                        # If model is selected, get years for that specific make and model
+                        cursor.execute("SELECT DISTINCT Year FROM manufacturer_chart WHERE Make = ? AND Model = ? AND Year IS NOT NULL AND Year != '' ORDER BY Year DESC", (make_to_use, model_to_use))
+                    else:
+                        # If only make is selected, get all years for that make
+                        cursor.execute("SELECT DISTINCT Year FROM manufacturer_chart WHERE Make = ? AND Year IS NOT NULL AND Year != '' ORDER BY Year DESC", (make_to_use,))
+                    
+                    manufacturer_years = cursor.fetchall()
+                    conn.close()
+                    
+                    for year_row in manufacturer_years:
+                        try:
+                            year_str = str(year_row[0])
+                            year_int = int(float(year_str))
+                            valid_years.add(year_int)
+                        except (ValueError, TypeError):
+                            continue
+            except Exception as e:
+                logging.error(f"Error getting manufacturer chart years: {e}")
+            
+            # Handle float years like '2017.0' by converting to int first
+            def year_sort_key(year_int):
+                return year_int
+            
+            valid_years = sorted(valid_years, key=year_sort_key, reverse=True)
             
             # Store current selection
             current_year = self.year_dropdown.currentText()
@@ -5777,6 +5911,8 @@ class ModernAnalyzerApp(ModernMainWindow):
         """Update make dropdown to show only makes that match current year and model selections."""
         try:
             valid_makes = set()
+            
+            # Get makes from prequal data
             for item in self.data['prequal']:
                 try:
                     if not self.has_valid_prequal(item):
@@ -5795,6 +5931,29 @@ class ModernAnalyzerApp(ModernMainWindow):
                             valid_makes.add(make)
                 except (ValueError, TypeError, KeyError):
                     continue
+            
+            # Get makes from manufacturer chart data
+            try:
+                if year_to_use not in ["Select Year", ""]:
+                    # Get all makes for the selected year from manufacturer chart
+                    conn = sqlite3.connect(self.db_path)
+                    cursor = conn.cursor()
+                    if model_to_use not in ["Select Model", ""]:
+                        # If model is selected, get makes for that specific year and model
+                        cursor.execute("SELECT DISTINCT Make FROM manufacturer_chart WHERE Year = ? AND Model = ? AND Make IS NOT NULL AND Make != '' ORDER BY Make", (year_to_use, model_to_use))
+                    else:
+                        # If only year is selected, get all makes for that year
+                        cursor.execute("SELECT DISTINCT Make FROM manufacturer_chart WHERE Year = ? AND Make IS NOT NULL AND Make != '' ORDER BY Make", (year_to_use,))
+                    
+                    manufacturer_makes = cursor.fetchall()
+                    conn.close()
+                    
+                    for make_row in manufacturer_makes:
+                        make = make_row[0].strip()
+                        if make and self.is_make_in_current_region(make):
+                            valid_makes.add(make)
+            except Exception as e:
+                logging.error(f"Error getting manufacturer chart makes: {e}")
             
             valid_makes = sorted(valid_makes)
             
@@ -5822,6 +5981,8 @@ class ModernAnalyzerApp(ModernMainWindow):
         """Update model dropdown to show only models that match current year and make selections."""
         try:
             valid_models = set()
+            
+            # Get models from prequal data
             for item in self.data['prequal']:
                 try:
                     if not self.has_valid_prequal(item):
@@ -5840,6 +6001,17 @@ class ModernAnalyzerApp(ModernMainWindow):
                             valid_models.add(item['Model'].strip())
                 except (ValueError, TypeError, KeyError):
                     continue
+            
+            # Get models from manufacturer chart data
+            try:
+                from database_utils import get_unique_models_from_manufacturer_chart
+                if year_to_use not in ["Select Year", ""] and make_to_use not in ["Select Make", "All", ""]:
+                    manufacturer_models = get_unique_models_from_manufacturer_chart(year_to_use, make_to_use, self.db_path)
+                    for model in manufacturer_models:
+                        if model.strip():
+                            valid_models.add(model.strip())
+            except Exception as e:
+                logging.error(f"Error getting manufacturer chart models: {e}")
             
             valid_models = sorted(valid_models)
             
@@ -6791,8 +6963,6 @@ class VehicleCompareDialog(ModernDialog):
                 """
         
         return html
-
-# ... existing code ...
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
