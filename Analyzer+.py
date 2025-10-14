@@ -2256,7 +2256,7 @@ class ModernAnalyzerApp(ModernMainWindow):
         # Region data
         self.region_makes = {
             'German': ['BMW', 'MINI', 'Rolls-Royce', 'Volkswagen', 'Audi', 'Porsche', 'Fiat', 'Alfa Romeo', 'Jaguar', 'Land Rover', 'Volvo'],
-            'Asian': ['Honda', 'Acura', 'Toyota', 'Lexus', 'Nissan', 'Infinity', 'Mitsubishi', 'Mazda', 'Subaru'],
+            'Asian': ['Honda', 'Acura', 'Toyota', 'Lexus', 'Nissan', 'Infinity', 'Mitsubishi', 'Mazda', 'Subaru', 'Kia', 'Hyundai', 'Genesis'],
             'US': ['Buick', 'Cadillac', 'Chevrolet', 'GMC', 'Ford', 'Lincoln', 'Mercury', 'Chrysler', 'Dodge', 'Jeep', 'Ram']
         }
         self.current_region = 'ALL'  # Default to ALL
@@ -5858,14 +5858,16 @@ class ModernAnalyzerApp(ModernMainWindow):
             try:
                 if year_to_use not in ["Select Year", ""]:
                     # Get all makes for the selected year from manufacturer chart
+                    # Convert year to float format for database comparison (e.g., "2021" -> "2021.0")
+                    year_float = f"{float(year_to_use)}"
                     conn = sqlite3.connect(self.db_path)
                     cursor = conn.cursor()
                     if model_to_use not in ["Select Model", ""]:
                         # If model is selected, get makes for that specific year and model
-                        cursor.execute("SELECT DISTINCT Make FROM manufacturer_chart WHERE Year = ? AND Model = ? AND Make IS NOT NULL AND Make != '' ORDER BY Make", (year_to_use, model_to_use))
+                        cursor.execute("SELECT DISTINCT Make FROM manufacturer_chart WHERE Year = ? AND Model = ? AND Make IS NOT NULL AND Make != '' ORDER BY Make", (year_float, model_to_use))
                     else:
                         # If only year is selected, get all makes for that year
-                        cursor.execute("SELECT DISTINCT Make FROM manufacturer_chart WHERE Year = ? AND Make IS NOT NULL AND Make != '' ORDER BY Make", (year_to_use,))
+                        cursor.execute("SELECT DISTINCT Make FROM manufacturer_chart WHERE Year = ? AND Make IS NOT NULL AND Make != '' ORDER BY Make", (year_float,))
                     
                     manufacturer_makes = cursor.fetchall()
                     conn.close()
