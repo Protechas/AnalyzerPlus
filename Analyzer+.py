@@ -5841,8 +5841,16 @@ class ModernAnalyzerApp(ModernMainWindow):
                         continue
                     
                     # Check if this item matches our current selections
-                    year_matches = (year_to_use in ["Select Year", ""] or 
-                                  str(item.get('Year', '')).strip() == str(year_to_use).strip())
+                    # Normalize year comparison to handle float values (e.g., 2024.0 vs 2024)
+                    year_matches = year_to_use in ["Select Year", ""]
+                    if not year_matches and 'Year' in item and pd.notna(item['Year']):
+                        try:
+                            item_year = int(float(item['Year']))
+                            selected_year = int(year_to_use)
+                            year_matches = (item_year == selected_year)
+                        except (ValueError, TypeError):
+                            pass
+                    
                     model_matches = (model_to_use in ["Select Model", ""] or 
                                    str(item.get('Model', '')).strip() == str(model_to_use).strip())
                     
