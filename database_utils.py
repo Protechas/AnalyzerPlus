@@ -158,6 +158,104 @@ def update_vehicle_models(selector, year, make, db_path='data.db'):
     except Exception as e:
         logging.error(f"Error updating models: {e}")
 
+def get_manufacturer_chart_data(db_path='data.db'):
+    """Get all manufacturer chart data from database"""
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        
+        # Check if table exists
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='manufacturer_chart'")
+        if not cursor.fetchone():
+            conn.close()
+            return []
+        
+        # Get all data
+        cursor.execute("SELECT * FROM manufacturer_chart")
+        columns = [description[0] for description in cursor.description]
+        rows = cursor.fetchall()
+        
+        # Convert to list of dictionaries
+        data = []
+        for row in rows:
+            record = dict(zip(columns, row))
+            data.append(record)
+        
+        conn.close()
+        return data
+    except Exception as e:
+        logging.error(f"Error getting manufacturer chart data: {e}")
+        return []
+
+def get_unique_years_from_manufacturer_chart(db_path='data.db'):
+    """Get unique years from manufacturer chart data"""
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        
+        # Check if table exists
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='manufacturer_chart'")
+        if not cursor.fetchone():
+            conn.close()
+            return []
+        
+        # Get unique years
+        cursor.execute("SELECT DISTINCT Year FROM manufacturer_chart WHERE Year IS NOT NULL AND Year != '' ORDER BY Year DESC")
+        years = [str(row[0]) for row in cursor.fetchall()]
+        
+        conn.close()
+        return years
+    except Exception as e:
+        logging.error(f"Error getting unique years from manufacturer chart: {e}")
+        return []
+
+def get_unique_makes_from_manufacturer_chart(db_path='data.db'):
+    """Get unique makes from manufacturer chart data"""
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        
+        # Check if table exists
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='manufacturer_chart'")
+        if not cursor.fetchone():
+            conn.close()
+            return []
+        
+        # Get unique makes
+        cursor.execute("SELECT DISTINCT Make FROM manufacturer_chart WHERE Make IS NOT NULL AND Make != '' ORDER BY Make")
+        makes = [row[0] for row in cursor.fetchall()]
+        
+        conn.close()
+        return makes
+    except Exception as e:
+        logging.error(f"Error getting unique makes from manufacturer chart: {e}")
+        return []
+
+def get_unique_models_from_manufacturer_chart(year, make, db_path='data.db'):
+    """Get unique models from manufacturer chart data for given year and make"""
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        
+        # Check if table exists
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='manufacturer_chart'")
+        if not cursor.fetchone():
+            conn.close()
+            return []
+        
+        # Convert year to float format for database comparison (e.g., "2021" -> "2021.0")
+        year_float = f"{float(year)}"
+        
+        # Get unique models for the given year and make
+        cursor.execute("SELECT DISTINCT Model FROM manufacturer_chart WHERE Year = ? AND Make = ? AND Model IS NOT NULL AND Model != '' ORDER BY Model", (year_float, make))
+        models = [row[0] for row in cursor.fetchall()]
+        
+        conn.close()
+        return models
+    except Exception as e:
+        logging.error(f"Error getting unique models from manufacturer chart: {e}")
+        return []
+
 def get_vehicle_data(vehicle, db_path='data.db'):
     """Get all relevant data for a vehicle"""
     try:
