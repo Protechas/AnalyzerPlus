@@ -566,6 +566,3 @@ class MultiVehicleCompareDialog(ModernDialog):
                 
         html += "</table></div></div>"
         return html
-
-
-
