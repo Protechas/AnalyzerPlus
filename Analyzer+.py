@@ -10,9 +10,16 @@ import logging
 import json
 import re
 from datetime import datetime
+
+# DEBUG: Print which Python is being used
+print(f"="*70)
+print(f"PYTHON EXECUTABLE: {sys.executable}")
+print(f"PYTHON VERSION: {sys.version}")
+print(f"="*70)
+
 import pandas as pd
 from PyQt5.QtCore import Qt, QUrl, QTimer, QPropertyAnimation, QEasingCurve, QRect, QRectF, pyqtProperty, pyqtSignal
-from PyQt5.QtGui import QDesktopServices, QIcon, QKeySequence, QFont, QPalette, QColor, QPixmap, QPainter, QLinearGradient, QPen, QBrush
+from PyQt5.QtGui import QDesktopServices, QIcon, QKeySequence, QFont, QPalette, QColor, QPixmap, QPainter, QLinearGradient, QPen, QBrush, QTextCursor
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QListWidget, QLabel, QMessageBox, QFileDialog, QInputDialog,
@@ -20,7 +27,7 @@ from PyQt5.QtWidgets import (
     QGroupBox, QCheckBox, QRadioButton, QButtonGroup, QStackedWidget, 
     QStyle, QFrame, QPushButton, QComboBox, QLineEdit, QTextBrowser,
     QProgressBar, QSlider, QTabWidget, QSplitter, QStatusBar, QToolBar,
-    QDialog
+    QDialog, QSpinBox
 )
 from PyQt5.QtWidgets import QStyleFactory
 from PyQt5.QtWidgets import QGraphicsDropShadowEffect, QGraphicsOpacityEffect
@@ -190,18 +197,42 @@ class ModernTextBrowser(QTextBrowser):
     """A modern text browser with custom styling"""
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.current_font_size = 13
         self.setStyleSheet("""
             QTextBrowser {
                 border: 2px solid #e9ecef;
                 border-radius: 8px;
                 background: white;
-                font-size: 13px;
                 line-height: 1.5;
             }
             QTextBrowser:focus {
                 border-color: #667eea;
             }
         """)
+        # Set initial font
+        font = QFont()
+        font.setPointSize(self.current_font_size)
+        self.setFont(font)
+        self.document().setDefaultFont(font)
+    
+    def set_font_size(self, size):
+        """Change the actual font size"""
+        self.current_font_size = size
+        
+        # Update widget font
+        font = QFont()
+        font.setPointSize(size)
+        self.setFont(font)
+        
+        # Update document default font
+        self.document().setDefaultFont(font)
+        
+        # Change font size of all existing text using QTextCursor
+        cursor = QTextCursor(self.document())
+        cursor.select(QTextCursor.Document)
+        char_format = cursor.charFormat()
+        char_format.setFontPointSize(size)
+        cursor.mergeCharFormat(char_format)
 
 class ModernProgressBar(QProgressBar):
     """A modern progress bar with gradient styling"""
@@ -2629,6 +2660,35 @@ class ModernAnalyzerApp(ModernMainWindow):
         self.always_on_top_button.clicked.connect(self.toggle_always_on_top)
         self.toolbar.addWidget(self.always_on_top_button)
         self.toolbar.addSeparator()
+        
+        # Font size control
+        font_size_label = QLabel("Font Size:")
+        self.toolbar.addWidget(font_size_label)
+        self.font_size_spinbox = QSpinBox()
+        self.font_size_spinbox.setRange(8, 32)
+        self.font_size_spinbox.setValue(13)
+        self.font_size_spinbox.setSuffix(" pt")
+        self.font_size_spinbox.setStyleSheet("""
+            QSpinBox {
+                background: #fff;
+                color: #20567C;
+                border-radius: 6px;
+                padding: 6px 12px;
+                font-size: 14px;
+                min-width: 80px;
+            }
+            QSpinBox::up-button, QSpinBox::down-button {
+                background: #19507a;
+                border-radius: 3px;
+            }
+            QSpinBox::up-button:hover, QSpinBox::down-button:hover {
+                background: #1e5d8a;
+            }
+        """)
+        self.font_size_spinbox.valueChanged.connect(self.update_font_size)
+        self.toolbar.addWidget(self.font_size_spinbox)
+        
+        self.toolbar.addSeparator()
         theme_label = QLabel("Theme:")
         self.toolbar.addWidget(theme_label)
         self.theme_dropdown = ModernComboBox()
@@ -2944,6 +3004,8 @@ class ModernAnalyzerApp(ModernMainWindow):
         
         # Add the toggle to the header
         header_layout.addWidget(self.sliding_toggle)
+        # Hide the toggle for now
+        self.sliding_toggle.hide()
         header_layout.addStretch()
         header_layout.addStretch()
         
@@ -3244,6 +3306,26 @@ class ModernAnalyzerApp(ModernMainWindow):
         else:
             self.setWindowFlags(self.windowFlags() & ~Qt.WindowStaysOnTopHint)
             self.show()
+    
+    def update_font_size(self, size):
+        """Update font size for all text display browsers"""
+        # List of text browser attribute names
+        browser_names = [
+            'text_browser',
+            'left_panel',
+            'blacklist_panel_widget',
+            'goldlist_panel_widget',
+            'mag_glass_panel_widget',
+            'results_display'
+        ]
+        
+        # Update each text browser if it exists
+        for name in browser_names:
+            if hasattr(self, name):
+                browser = getattr(self, name)
+                if hasattr(browser, 'set_font_size'):
+                    browser.set_font_size(size)
+    
 
 
 
