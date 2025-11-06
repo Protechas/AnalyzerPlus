@@ -215,6 +215,13 @@ class ModernTextBrowser(QTextBrowser):
         self.setFont(font)
         self.document().setDefaultFont(font)
     
+    def setHtml(self, html):
+        """Override setHtml to apply font size after content is set"""
+        super().setHtml(html)
+        # Re-apply font size after setting new HTML content
+        if hasattr(self, 'current_font_size'):
+            self.set_font_size(self.current_font_size)
+    
     def set_font_size(self, size):
         """Change the actual font size"""
         self.current_font_size = size
@@ -3326,6 +3333,12 @@ class ModernAnalyzerApp(ModernMainWindow):
                 if hasattr(browser, 'set_font_size'):
                     browser.set_font_size(size)
     
+    def apply_current_font_size(self, browser):
+        """Apply the current font size from the spinner to a specific browser"""
+        if hasattr(browser, 'set_font_size'):
+            current_font_size = self.font_size_spinbox.value()
+            browser.set_font_size(current_font_size)
+    
 
 
 
@@ -3626,6 +3639,9 @@ class ModernAnalyzerApp(ModernMainWindow):
                 html_content = self.format_cmc_data_for_display(df)
                 self.left_panel.setHtml(html_content)
                 self.left_panel.setOpenExternalLinks(True)
+                # Apply current font size
+                current_font_size = self.font_size_spinbox.value()
+                self.left_panel.set_font_size(current_font_size)
         
         except Exception as e:
             logging.error(f"Failed to display CMC data: {e}")
@@ -3981,6 +3997,9 @@ class ModernAnalyzerApp(ModernMainWindow):
         html_text = self.convert_markdown_to_html(markdown_text)
         self.left_panel.setHtml(html_text)
         self.left_panel.setOpenExternalLinks(True)
+        # Apply current font size
+        current_font_size = self.font_size_spinbox.value()
+        self.left_panel.set_font_size(current_font_size)
 
     def convert_markdown_to_html(self, markdown_text):
         """Convert markdown text to HTML for display with smaller font size"""
